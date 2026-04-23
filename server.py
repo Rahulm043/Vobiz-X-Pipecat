@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
+from pyngrok import ngrok
 
 load_dotenv(override=True)
 
@@ -148,9 +149,9 @@ def get_host_and_protocol(request: Request = None):
 
         # Warn if using localhost without PUBLIC_URL set
         if host.startswith("localhost") or host.startswith("127.0.0.1"):
-            print("[WARNING] ⚠️  Using localhost for URL!")
-            print("[WARNING] ⚠️  Vobiz will NOT be able to reach this URL!")
-            print("[WARNING] ⚠️  Solution: Set PUBLIC_URL in .env")
+            print("[WARNING] [ALERT] Using localhost for URL!")
+            print("[WARNING] [ALERT] Vobiz will NOT be able to reach this URL!")
+            print("[WARNING] [ALERT] Solution: Set PUBLIC_URL in .env")
 
         print(f"[DEBUG] Detected protocol: {protocol}")
         return host, protocol
@@ -292,21 +293,37 @@ async def get_answer_xml(
 ) -> HTMLResponse:
     """Return XML instructions for connecting call to WebSocket or transferring to human."""
     print("\n[ANSWER] ========== ANSWER XML REQUEST ==========")
-    print(f"[ANSWER] Call UUID: {CallUUID}")
+    
+    # Try to get CallUUID from query params if None
+    if not CallUUID:
+        CallUUID = request.query_params.get("CallUUID")
 
-    # Parse body data from query parameter
+    # If still None, try to get from POST body
     parsed_body_data = {}
-    if body_data:
-        try:
-            parsed_body_data = json.loads(body_data)
-        except json.JSONDecodeError:
-            print(f"[ANSWER] Failed to parse body data: {body_data}")
+    try:
+        body_bytes = await request.body()
+        if body_bytes:
+            body_text = body_bytes.decode("utf-8")
+            # Try to parse as JSON or Form data
+            try:
+                parsed_body_data = json.loads(body_text)
+            except json.JSONDecodeError:
+                from urllib.parse import parse_qs
+                parsed_body_data = {k: v[0] for k, v in parse_qs(body_text).items()}
+            
+            # Check for CallUUID in standard Vobiz/Plivo fields
+            if not CallUUID:
+                CallUUID = parsed_body_data.get("CallUUID") or parsed_body_data.get("call_uuid") or parsed_body_data.get("request_uuid")
+    except Exception as e:
+        print(f"[ANSWER] Error parsing body: {e}")
+
+    print(f"[ANSWER] Call UUID: {CallUUID}")
 
     # Check if this call is marked for transfer
     if CallUUID and CallUUID in active_calls:
         call_info = active_calls[CallUUID]
         if call_info.get("transfer_requested"):
-            print(f"[ANSWER] 🔄 Call {CallUUID} is marked for transfer - returning Dial XML")
+            print(f"[ANSWER] [TRANSFER] Call {CallUUID} is marked for transfer - returning Dial XML")
 
             # Get transfer destination
             agent_number = os.getenv("TRANSFER_AGENT_NUMBER", "+919148227303")
@@ -363,47 +380,26 @@ async def get_answer_xml(
             body_encoded = base64.b64encode(body_json.encode("utf-8")).decode("utf-8")
             query_params.append(f"body={body_encoded}")
 
-        # Construct final WebSocket URL with query parameters
-        if query_params:
-            ws_url = f"{base_ws_url}?{'&amp;'.join(query_params)}"
-        else:
-            ws_url = base_ws_url
-
-        # Log the WebSocket URL for debugging
-        print(f"[INFO] WebSocket URL being sent to Vobiz: {ws_url}")
-        print(f"[INFO] Host: {host}, Environment: {env}")
-
-        # Generate XML response for Vobiz
-
-        # Check if recording is enabled
-        enable_recording = os.getenv("ENABLE_RECORDING", "true").lower() == "true"
-        max_recording_length = os.getenv("MAX_RECORDING_LENGTH", "3600")  # Default: 1 hour
+        # Add CallUUID if available
+        if CallUUID:
+            query_params.append(f"call_uuid={CallUUID}")
 
         # Build Record element if recording is enabled
         record_element = ""
-        # if enable_recording:
-        # User requested specific hardcoded XML structure
-        # record_action_url = f"{protocol}://{host}/recording-finished"
-        # record_callback_url = f"{protocol}://{host}/recording-ready"
-
-        record_element = f"""
+        enable_recording = os.getenv("ENABLE_RECORDING", "true").lower() == "true"
+        if enable_recording:
+            record_element = f"""
         <Record fileFormat="wav" maxLength="3600" recordSession="true" callbackUrl="{protocol}://{host}/recording-ready" callbackMethod="POST">
         </Record>"""
 
-        #     print(f"[INFO] Using user-requested hardcoded recording element")
-        # else:
-        #     print(f"[INFO] Recording disabled (ENABLE_RECORDING=false)")
-
-        # Use user-requested XML structure with specific params
-        # Note: We still need to inject the ws_url dynamic parameters if we want it to work with our bot
-        # But user asked for specific format. combining the two:
-        # Re-building correct WS URL to match user request pattern but with actual dynamic values where needed
+        # Construct final WebSocket URL with query parameters
         ws_url_base = f"wss://{host}/voice/ws"
         
-        # Use existing query_params populated earlier (lines 350-364)
-        # Note: query_params already contains serviceHost (if prod) and body (if present)
-        
-        final_ws_url = f"{ws_url_base}?{'&'.join(query_params)}" if query_params else ws_url_base
+        # Ensure call_uuid is in query_params if we have it
+        if CallUUID and not any(p.startswith("call_uuid=") for p in query_params):
+            query_params.append(f"call_uuid={CallUUID}")
+            
+        final_ws_url = f"{ws_url_base}?{'&amp;'.join(query_params)}" if query_params else ws_url_base
 
         xml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -452,9 +448,9 @@ async def recording_finished(request: Request) -> HTMLResponse:
     if call_uuid and call_uuid in active_calls:
         active_calls[call_uuid]["recording_id"] = recording_id
         active_calls[call_uuid]["recording_url"] = recording_url
-        print(f"[RECORDING] ✅ Stored recording ID {recording_id} for call {call_uuid}")
+        print(f"[RECORDING] [SUCCESS] Stored recording ID {recording_id} for call {call_uuid}")
     else:
-        print(f"[RECORDING] ⚠️  Call {call_uuid} not found in active_calls (may have ended)")
+        print(f"[RECORDING] [WARNING] Call {call_uuid} not found in active_calls (may have ended)")
 
     # Optional: Download the recording
     # if recording_url:
@@ -512,14 +508,14 @@ async def recording_ready(request: Request) -> HTMLResponse:
                         filename = f"recordings/{recording_id}.mp3"
                         with open(filename, "wb") as f:
                             f.write(audio_data)
-                        print(f"[RECORDING CALLBACK] ✅ Downloaded to {filename}")
+                        print(f"[RECORDING CALLBACK] [SUCCESS] Downloaded to {filename}")
                         print(f"[RECORDING CALLBACK] File size: {len(audio_data)} bytes")
                     else:
-                        print(f"[RECORDING CALLBACK] ❌ Download failed: HTTP {resp.status}")
+                        print(f"[RECORDING CALLBACK] [ERROR] Download failed: HTTP {resp.status}")
                         error_text = await resp.text()
                         print(f"[RECORDING CALLBACK] Error: {error_text}")
         except Exception as e:
-            print(f"[RECORDING CALLBACK] ❌ Error downloading recording: {e}")
+            print(f"[RECORDING CALLBACK] [ERROR] Error downloading recording: {e}")
             import traceback
             print(f"[RECORDING CALLBACK] Traceback:\n{traceback.format_exc()}")
 
@@ -739,7 +735,7 @@ async def handle_vobiz_websocket(
                 active_calls[call_uuid]["status"] = "active"
                 active_calls[call_uuid]["websocket"] = websocket
                 active_calls[call_uuid]["path"] = path
-                print(f"[CALL] ✅ Updated existing call {call_uuid} with WebSocket")
+                print(f"[CALL] [SUCCESS] Updated existing call {call_uuid} with WebSocket")
             else:
                 # Create new entry
                 active_calls[call_uuid] = {
@@ -749,11 +745,11 @@ async def handle_vobiz_websocket(
                     "websocket": websocket,
                     "transfer_requested": False
                 }
-                print(f"[CALL] ✅ Created new call entry for {call_uuid}")
+                print(f"[CALL] [SUCCESS] Created new call entry for {call_uuid}")
 
             print(f"[CALL] Active calls count: {len(active_calls)}")
         else:
-            print("[CALL] ⚠️  No call UUID found in URL query params")
+            print("[CALL] [WARNING] No call UUID found in URL query params")
 
         # Create runner arguments and run the bot
         runner_args = WebSocketRunnerArguments(websocket=websocket)
@@ -779,13 +775,13 @@ async def handle_vobiz_websocket(
         if call_uuid and call_uuid in active_calls:
             call_status = active_calls[call_uuid].get("status", "active")
             if call_status == "transferring":
-                print(f"[CALL] 🔄 Call {call_uuid} is being transferred - keeping in active_calls")
+                print(f"[CALL] [TRANSFER] Call {call_uuid} is being transferred - keeping in active_calls")
                 # Remove websocket reference but keep call record for transfer
                 active_calls[call_uuid]["websocket"] = None
             else:
                 # Normal call end - remove completely
                 del active_calls[call_uuid]
-                print(f"[CALL] 🔴 Removed call UUID: {call_uuid}")
+                print(f"[CALL] [CLEANUP] Removed call UUID: {call_uuid}")
                 print(f"[CALL] Active calls count: {len(active_calls)}")
 
 
@@ -834,4 +830,24 @@ async def websocket_stream(
 
 
 if __name__ == "__main__":
+    print(f"\n[DEBUG] Server starting...")
+    print(f"[DEBUG] ENV: {os.getenv('ENV')}")
+    print(f"[DEBUG] PUBLIC_URL: {os.getenv('PUBLIC_URL')}")
+
+    # Start ngrok tunnel in local environment
+    if os.getenv("ENV", "local").lower() == "local":
+        print(f"[NGROK] Attempting to start tunnel on port 7860...")
+        try:
+            # Kill existing ngrok instances to avoid conflicts
+            import subprocess
+            subprocess.run(["taskkill", "/F", "/IM", "ngrok.exe"], 
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            port = 7860
+            public_url = ngrok.connect(port).public_url
+            print(f"\n[NGROK] Tunnel active at: {public_url}")
+            os.environ["PUBLIC_URL"] = public_url
+        except Exception as e:
+            print(f"[NGROK] Failed to start tunnel: {e}")
+
     uvicorn.run(app, host="0.0.0.0", port=7860)
