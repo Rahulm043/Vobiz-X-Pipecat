@@ -13,7 +13,7 @@ from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
-from pipecat.frames.frames import LLMContextFrame
+from pipecat.frames.frames import LLMContextFrame, TextFrame
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.runner.types import RunnerArguments
@@ -91,8 +91,17 @@ async def run_bot(transport: BaseTransport, handle_sigint: bool):
 
     async def on_client_connected(transport, client):
         logger.info(f"Starting outbound call conversation. Client: {client}")
-        # Trigger the initial greeting
-        await task.queue_frame(LLMContextFrame(context))
+        # TRIGGER INSTANT GREETING
+        # Instead of waiting for the LLM to generate a response, we provide a pre-defined greeting.
+        # This eliminates the initial 7-10s delay.
+        greeting = "Hello! I am your AI assistant. How can I help you today?"
+        
+        # 1. Update the LLM context manually so it knows it has greeted the user
+        context.add_message({"role": "assistant", "content": greeting})
+        
+        # 2. Queue the text frame directly to the pipeline.
+        # This will be processed by TTS and sent to the transport immediately.
+        await task.queue_frame(TextFrame(greeting))
 
     async def on_vad_started(transport):
         logger.info("VAD Started - User is speaking")
@@ -122,12 +131,19 @@ async def bot(runner_args: RunnerArguments, call_id: str = None, stream_id: str 
     """Main bot entry point compatible with Pipecat Cloud."""
 
     # If call_id/stream_id not provided, try to parse from WebSocket (legacy behavior)
-    if not call_id or not stream_id:
+    if not call_id:
         # Parse the telephony WebSocket to extract stream_id and call_id
+        # NOTE: This can be problematic if it consumes the handshake message!
         transport_type, call_data = await parse_telephony_websocket(runner_args.websocket)
         logger.info(f"Transport type: {transport_type}, Call data: {call_data}")
         stream_id = call_data.get("stream_id", "")
         call_id = call_data.get("call_id", "")
+    elif not stream_id:
+        # If we have call_id (from query params) but no stream_id, 
+        # we skip the parsing to avoid consuming handshake messages and just use call_id as stream_id.
+        # Vobiz integration works fine with this for initial handshake.
+        logger.info(f"Using call_id as stream_id - Call ID: {call_id}")
+        stream_id = call_id
     else:
         logger.info(f"Using pre-parsed call data - Call ID: {call_id}, Stream ID: {stream_id}")
 
@@ -151,7 +167,7 @@ async def bot(runner_args: RunnerArguments, call_id: str = None, stream_id: str 
             audio_out_enabled=True,
             add_wav_header=False,  # CRITICAL: Must be False for telephony
             serializer=serializer,  
-            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.5)),
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.5)), # Back to 0.5 for stability
         ),
     )
 

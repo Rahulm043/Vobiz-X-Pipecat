@@ -683,7 +683,8 @@ async def handle_vobiz_websocket(
     print("[DEBUG] ========================================")
 
     try:
-        await websocket.accept()
+        # Accept the connection with the appropriate subprotocol for Vobiz/SIP
+        await websocket.accept(subprotocol="audio.drachtio.org")
         print("[SUCCESS] WebSocket connection accepted for outbound call")
     except Exception as e:
         print(f"[ERROR] Failed to accept WebSocket connection: {e}")
