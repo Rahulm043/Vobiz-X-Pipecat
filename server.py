@@ -20,6 +20,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pyngrok import ngrok
+from bot import bot
 
 load_dotenv(override=True)
 
@@ -706,8 +707,6 @@ async def handle_vobiz_websocket(
     call_uuid = None
 
     try:
-        # Import the bot function from the bot module
-        from bot import bot
         from pipecat.runner.types import WebSocketRunnerArguments
         from pipecat.runner.utils import parse_telephony_websocket
 

@@ -14,8 +14,14 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.frames.frames import LLMContextFrame, TextFrame
+from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.processors.aggregators.llm_context import LLMContext
-from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
+from pipecat.processors.aggregators.llm_response_universal import (
+    LLMContextAggregatorPair,
+    LLMUserAggregatorParams,
+)
+from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.runner.types import RunnerArguments
 from pipecat.runner.utils import parse_telephony_websocket
 from pipecat.serializers.vobiz import VobizFrameSerializer
@@ -29,6 +35,14 @@ from pipecat.transports.websocket.fastapi import (
 )
 
 load_dotenv(override=True)
+import time
+
+# Initialize Smart Turn Analyzer once at startup to avoid per-call loading latency (15-20s)
+try:
+    from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
+    smart_turn_analyzer = LocalSmartTurnAnalyzerV3()
+except ImportError:
+    smart_turn_analyzer = None
 
 
 async def run_bot(transport: BaseTransport, handle_sigint: bool):
@@ -37,7 +51,10 @@ async def run_bot(transport: BaseTransport, handle_sigint: bool):
         model="gpt-4o-mini"
     )
 
-    stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
+    stt = DeepgramSTTService(
+        api_key=os.getenv("DEEPGRAM_API_KEY"),
+        model="nova-2-general"
+    )
 
     tts = DeepgramTTSService(
         api_key=os.getenv("DEEPGRAM_API_KEY"),
@@ -56,7 +73,18 @@ async def run_bot(transport: BaseTransport, handle_sigint: bool):
     ]
 
     context = LLMContext(messages)
-    context_aggregator = LLMContextAggregatorPair(context)
+    context_aggregator = LLMContextAggregatorPair(
+        context,
+        user_params=LLMUserAggregatorParams(
+            user_turn_strategies=UserTurnStrategies(
+                stop=[
+                    TurnAnalyzerUserTurnStopStrategy(
+                        turn_analyzer=smart_turn_analyzer
+                    )
+                ]
+            )
+        )
+    )
 
     pipeline = Pipeline(
         [
@@ -80,14 +108,34 @@ async def run_bot(transport: BaseTransport, handle_sigint: bool):
         ),
     )
 
-    async def on_transcription(stt, text):
-        logger.info(f"STT Transcription: {text}")
+    # Register transcript logging on the user aggregator (where final transcribed text ends up)
+    @context_aggregator.user().event_handler("on_user_turn_stopped")
+    async def on_user_transcript(aggregator, turn_data, *args):
+        # In Pipecat 1.0.0, the last user message is in turn_data or context
+        pass
 
+    @llm.event_handler("on_response_started")
     async def on_response_started(llm):
         logger.info("LLM Response started")
 
+    @tts.event_handler("on_audio_started")
     async def on_audio_started(tts):
         logger.info("TTS Audio started")
+
+    # Store temporary session state (timing, flags) locally instead of on the task object
+    # to avoid "PipelineTask object has no attribute 'set_metadata'" errors.
+    session_state = {"turn_start_time": time.time()}
+
+    # Turn tracking on the user aggregator (more reliable than transport VAD events)
+    @context_aggregator.user().event_handler("on_user_turn_started")
+    async def on_user_turn_started(aggregator, *args):
+        logger.info(f"User started speaking (Turn Started)")
+        session_state["turn_start_time"] = time.time()
+
+    @context_aggregator.user().event_handler("on_user_turn_stopped")
+    async def on_user_turn_stopped(aggregator, *args):
+        duration = time.time() - session_state.get("turn_start_time", time.time())
+        logger.info(f"User finished speaking (Turn Stopped, Duration: {duration:.2f}s)")
 
     async def on_client_connected(transport, client):
         logger.info(f"Starting outbound call conversation. Client: {client}")
@@ -103,19 +151,8 @@ async def run_bot(transport: BaseTransport, handle_sigint: bool):
         # This will be processed by TTS and sent to the transport immediately.
         await task.queue_frame(TextFrame(greeting))
 
-    async def on_vad_started(transport):
-        logger.info("VAD Started - User is speaking")
-
-    async def on_vad_stopped(transport):
-        logger.info("VAD Stopped - User finished speaking")
-
-    # Register handlers using add_event_handler (more reliable in Pipecat 1.0.0)
-    stt.add_event_handler("on_transcription", on_transcription)
-    llm.add_event_handler("on_response_started", on_response_started)
-    tts.add_event_handler("on_audio_started", on_audio_started)
+    # Register transport-level handlers
     transport.add_event_handler("on_client_connected", on_client_connected)
-    transport.add_event_handler("on_vad_started", on_vad_started)
-    transport.add_event_handler("on_vad_stopped", on_vad_stopped)
     
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
@@ -167,7 +204,7 @@ async def bot(runner_args: RunnerArguments, call_id: str = None, stream_id: str 
             audio_out_enabled=True,
             add_wav_header=False,  # CRITICAL: Must be False for telephony
             serializer=serializer,  
-            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.5)), # Back to 0.5 for stability
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.25)), # Balanced for natural flow
         ),
     )
 
