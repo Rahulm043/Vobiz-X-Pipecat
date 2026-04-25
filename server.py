@@ -20,9 +20,15 @@ from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pyngrok import ngrok
-from bot import bot
-
 load_dotenv(override=True)
+
+# Bot selection logic
+if os.getenv("USE_LIVE_BOT", "false").lower() == "true":
+    from bot_live import bot
+    print("[INFO] Using Gemini 3.1 Flash Live bot (bot_live.py)")
+else:
+    from bot import bot
+    print("[INFO] Using cascaded STT-LLM-TTS bot (bot.py)")
 
 
 # ----------------- ACTIVE CALLS TRACKING ----------------- #
@@ -214,6 +220,10 @@ async def initiate_outbound_call(request: Request) -> JSONResponse:
 
         # Extract body data if provided
         body_data = data.get("body", {})
+        
+        # Inject the parsed phone number into body_data so it reaches Pipecat
+        body_data["phone_number"] = phone_number
+        
         print(f"\n[INFO] Processing outbound call to {phone_number}")
         print(f"[DEBUG] Body data: {body_data}")
 
@@ -317,6 +327,15 @@ async def get_answer_xml(
                 CallUUID = parsed_body_data.get("CallUUID") or parsed_body_data.get("call_uuid") or parsed_body_data.get("request_uuid")
     except Exception as e:
         print(f"[ANSWER] Error parsing body: {e}")
+
+    # Merge injected body_data from query parameters (contains phone_number)
+    if body_data:
+        try:
+            import urllib.parse
+            injected_data = json.loads(urllib.parse.unquote(body_data))
+            parsed_body_data.update(injected_data)
+        except Exception as e:
+            print(f"[ANSWER] Error parsing query body_data: {e}")
 
     print(f"[ANSWER] Call UUID: {CallUUID}")
 
@@ -756,8 +775,13 @@ async def handle_vobiz_websocket(
         runner_args.handle_sigint = False
 
         print("[DEBUG] Calling bot function...")
-        # We pass call_id if we have it, but we let stream_id be None so bot/transport can find it from the stream
-        await bot(runner_args, call_id=call_uuid, stream_id=stream_id)
+        # Make a backwards-compatible call, passing body_data to bot if it supports it
+        import inspect
+        sig = inspect.signature(bot)
+        if "body_data" in sig.parameters:
+            await bot(runner_args, call_id=call_uuid, stream_id=stream_id, body_data=body_data)
+        else:
+            await bot(runner_args, call_id=call_uuid, stream_id=stream_id)
 
         print("[DEBUG] Bot function completed")
 
