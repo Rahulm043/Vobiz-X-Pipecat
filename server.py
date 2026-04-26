@@ -23,12 +23,18 @@ from pyngrok import ngrok
 load_dotenv(override=True)
 
 # Bot selection logic
-if os.getenv("USE_LIVE_BOT", "false").lower() == "true":
-    from bot_live import bot
+use_live = os.getenv("USE_LIVE_BOT", "false").lower() == "true"
+print(f"[DEBUG] USE_LIVE_BOT env: '{os.getenv('USE_LIVE_BOT')}', Effective: {use_live}")
+
+if use_live:
+    import bot_live as bot_module
     print("[INFO] Using Gemini 3.1 Flash Live bot (bot_live.py)")
 else:
-    from bot import bot
+    import bot as bot_module
     print("[INFO] Using cascaded STT-LLM-TTS bot (bot.py)")
+
+bot = bot_module.bot
+run_bot = bot_module.run_bot
 
 
 # ----------------- ACTIVE CALLS TRACKING ----------------- #
@@ -404,13 +410,9 @@ async def get_answer_xml(
         if CallUUID:
             query_params.append(f"call_uuid={CallUUID}")
 
-        # Build Record element if recording is enabled
-        record_element = ""
-        enable_recording = os.getenv("ENABLE_RECORDING", "true").lower() == "true"
-        if enable_recording:
-            record_element = f"""
-        <Record fileFormat="wav" maxLength="3600" recordSession="true" callbackUrl="{protocol}://{host}/recording-ready" callbackMethod="POST">
-        </Record>"""
+        # NOTE: Vobiz-level <Record> element removed.
+        # Recording is now handled natively by Pipecat's AudioBufferProcessor
+        # inside bot.py / bot_live.py at full 16-24kHz lossless WAV quality.
 
         # Construct final WebSocket URL with query parameters
         ws_url_base = f"wss://{host}/voice/ws"
@@ -423,7 +425,6 @@ async def get_answer_xml(
 
         xml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-{record_element}
         <Stream bidirectional="true" audioTrack="inbound" contentType="audio/x-mulaw;rate=8000" keepCallAlive="true">
             {final_ws_url}
         </Stream>
@@ -809,6 +810,78 @@ async def handle_vobiz_websocket(
                 print(f"[CALL] Active calls count: {len(active_calls)}")
 
 
+# ----------------- WEB CLIENT (RTVI WebSocket) ----------------- #
+
+
+async def _run_web_bot(websocket: WebSocket):
+    """Run the bot pipeline for browser clients using the RTVI WebSocket protocol.
+
+    Unlike the Vobiz telephony endpoints this does NOT use VobizFrameSerializer.
+    The browser connects with @pipecat-ai/client-js WebSocketTransport which
+    speaks the standard RTVI framing over a plain WebSocket.
+    """
+    from pipecat.serializers.protobuf import ProtobufFrameSerializer
+    from pipecat.transports.websocket.fastapi import (
+        FastAPIWebsocketParams,
+        FastAPIWebsocketTransport,
+    )
+    from pipecat.audio.vad.silero import SileroVADAnalyzer
+    from pipecat.audio.vad.vad_analyzer import VADParams
+
+    print("[WEB] Browser client connected via /web-ws")
+
+    try:
+        await websocket.accept()
+    except Exception as e:
+        print(f"[WEB] Failed to accept WebSocket: {e}")
+        return
+
+    # IMPORTANT: audio_out_sample_rate must be explicitly declared here so that
+    # the ProtobufFrameSerializer / RTVI bot-ready message tells the browser
+    # client-react AudioWorklet to play at 16kHz, not the browser default 48kHz.
+    # Mismatch => Bugs Bunny 3x pitch shift.
+    WEB_SAMPLE_RATE = 16000
+
+    transport = FastAPIWebsocketTransport(
+        websocket=websocket,
+        params=FastAPIWebsocketParams(
+            audio_in_enabled=True,
+            audio_out_enabled=True,
+            add_wav_header=False,
+            vad_enabled=True,
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.5)),
+            serializer=ProtobufFrameSerializer(),
+            audio_out_sample_rate=WEB_SAMPLE_RATE,  # must match bot_live PipelineParams
+        ),
+    )
+
+    # Unique call_id per session so recordings don't overwrite each other
+    web_call_id = f"web-{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    print(f"[WEB] Session ID: {web_call_id}")
+
+    try:
+        await run_bot(transport, handle_sigint=False, phone_number="web-user", call_id=web_call_id)
+    except Exception as e:
+        import traceback
+        print(f"[WEB] Error running web bot: {e}")
+        print(traceback.format_exc())
+    finally:
+        print("[WEB] Browser client disconnected")
+
+
+@app.websocket("/web-ws")
+async def websocket_web_client(websocket: WebSocket):
+    """RTVI WebSocket endpoint for browser clients.
+
+    Connect from the React frontend:
+        const transport = new WebSocketTransport();
+        await client.connect({ url: 'ws://localhost:7860/web-ws' });
+    """
+    await _run_web_bot(websocket)
+
+
+# ----------------- TELEPHONY WebSocket endpoints ----------------- #
+
 # Register WebSocket endpoints for common paths Vobiz might use
 @app.websocket("/ws")
 async def websocket_ws(
@@ -874,4 +947,4 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"[NGROK] Failed to start tunnel: {e}")
 
-    uvicorn.run(app, host="0.0.0.0", port=7860)
+    uvicorn.run(app, host="127.0.0.1", port=7860)

@@ -4,10 +4,12 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
+import datetime
 import os
 import time
 import asyncio
 import inspect
+import wave
 from dotenv import load_dotenv
 from loguru import logger
 
@@ -29,6 +31,7 @@ from pipecat.runner.utils import parse_telephony_websocket
 from pipecat.serializers.vobiz import VobizFrameSerializer
 from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService
 from pipecat.transports.base_transport import BaseTransport
+from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
 from pipecat.transports.websocket.fastapi import (
     FastAPIWebsocketParams,
     FastAPIWebsocketTransport,
@@ -109,7 +112,7 @@ Navigate fluidly; do not sound rehearsed. Follow this sequence exactly:
 * **Automatic Footer:** A standard business card footer is AUTOMATICALLY added by the system. Do NOT repeat general links or the institute name in your `custom_message`. Focus on the specific answers the user requested.
 * **Termination Rule:** You are responsible for hanging up the call. Call the 'end_call' tool immediately when the conversation reaches its natural conclusion or when the user indicates they want to finish the conversation. This includes(and not limited to) natural sign-offs like "Goodbye", "Byebye", "Rakho", "Katun", or simply "Thank you, that's all."
 * **Deduplication Rule:** Only call 'send_whatsapp_message' ONCE per request. If you have already executed it in this conversation for the current details, do not call it again.
-* **Non-Blocking:** Once you call a tool, assume it is delivered and continue the conversation or end it naturally.
+* **Non-Blocking / Silence Rule:** After calling `send_whatsapp_message` or `end_call`, do NOT say anything else. Remain absolutely silent. The tools handle confirmation and hangup entirely.
 """
 
 
@@ -117,6 +120,15 @@ Navigate fluidly; do not sound rehearsed. Follow this sequence exactly:
 async def run_bot(transport: BaseTransport, handle_sigint: bool, phone_number: str = None, call_id: str = None):
     bg_tasks = set()
     state = {"whatsapp_sent_at": 0}
+
+    # ── Native Recording ─────────────────────────────────────────────────────
+    # Records inside the Pipecat pipeline at full 16kHz quality.
+    # Stereo: user audio on the left channel, bot TTS on the right channel.
+    audiobuffer = AudioBufferProcessor(
+        num_channels=2,         # stereo: user=L, bot=R
+        enable_turn_audio=True, # also emit per-turn clips via on_*_turn_audio_data
+    )
+    # ────────────────────────────────────────────────────────────────────────
 
     tools_def = [{
         "function_declarations": [
@@ -159,7 +171,9 @@ async def run_bot(transport: BaseTransport, handle_sigint: bool, phone_number: s
             "Authorization": "Bearer a2446e2df73638ef91898f7a9f8a8e19da8b76f2a31517df6e0f4a7cfd8dd14a",
             "Content-Type": "application/json"
         }
-        data = {"to": ph_num, "text": text_content}
+        # Ensure phone number is in correct format (remove '+' if present)
+        clean_ph_num = ph_num.replace("+", "")
+        data = {"to": clean_ph_num, "text": text_content}
         try:
             import aiohttp
             async with aiohttp.ClientSession() as session:
@@ -224,8 +238,7 @@ IG: https://www.instagram.com/sukanyaclasses
         # Non-blocking background task
         asyncio.create_task(_do_send_whatsapp(phone_number, full_text))
         
-        # Directive return value to nudge the model to speak
-        return "Function result: WhatsApp message successfully sent. You MUST confirm this verbally to the user."
+        return "SUCCESS"
 
     async def _vobiz_rest_hangup():
         if not call_id:
@@ -257,7 +270,7 @@ IG: https://www.instagram.com/sukanyaclasses
         # 1. Schedule a hard-cancel safety net (3 seconds to allow final audio to clear)
         async def safety_cancel():
             await asyncio.sleep(3)
-            if not task.finished:
+            if not task.has_finished:
                 logger.info("⏳ Safety canceler triggered - forcing task shutdown")
                 # Try REST API hangup as final fallback
                 await _vobiz_rest_hangup()
@@ -265,18 +278,49 @@ IG: https://www.instagram.com/sukanyaclasses
         
         asyncio.create_task(safety_cancel())
 
-        # 2. Push EndFrame directly to the transport to bypass Gemini Live's deferral
-        # This ensures the WebSocket closes and the call is released by Vobiz promptly.
-        await transport.push_frame(EndFrame())
-        
-        # 3. Standard pipeline termination frames
+        # 2. Pipeline termination frames
+        # We queue EndFrame to the start of the pipeline for graceful cleanup.
+        # Although Gemini Live may defer this, the safety_cancel above will
+        # force a shutdown (including a REST API hangup) after 3 seconds.
         await task.queue_frame(EndFrame())
         await llm.push_frame(EndTaskFrame(), FrameDirection.UPSTREAM)
         
-        return "Function result: Call termination initiated."
+        return "SUCCESS"
 
     llm.register_function("send_whatsapp_message", send_whatsapp_message)
     llm.register_function("end_call", end_call)
+
+    # ── Recording event handlers ─────────────────────────────────────────────
+    @audiobuffer.event_handler("on_audio_data")
+    async def on_audio_data(buffer, audio, sample_rate, num_channels):
+        """Fires at end of call. Saves a single stereo WAV: user=L, bot=R."""
+        os.makedirs("recordings", exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        label = call_id or ts
+        fname = f"recordings/call_{label}_stereo.wav"
+        with wave.open(fname, "wb") as wf:
+            wf.setnchannels(num_channels)  # 2
+            wf.setsampwidth(2)             # 16-bit PCM
+            wf.setframerate(sample_rate)   # 16000 Hz (Gemini Live)
+            wf.writeframes(audio)
+        logger.info(f"[RECORDING] ✅ Stereo WAV saved → {fname} "
+                    f"({num_channels}ch, {sample_rate}Hz, {len(audio)//2//num_channels//sample_rate:.1f}s)")
+
+    @audiobuffer.event_handler("on_track_audio_data")
+    async def on_track_audio_data(buffer, user_audio, bot_audio, sample_rate, num_channels):
+        """Also saves separate user/bot mono WAVs alongside the stereo file."""
+        os.makedirs("recordings", exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        label = call_id or ts
+        for track_name, track_audio in (("user", user_audio), ("bot", bot_audio)):
+            fname = f"recordings/call_{label}_{track_name}.wav"
+            with wave.open(fname, "wb") as wf:
+                wf.setnchannels(1)              # mono per track
+                wf.setsampwidth(2)              # 16-bit PCM
+                wf.setframerate(sample_rate)    # 16000 Hz
+                wf.writeframes(track_audio)
+            logger.info(f"[RECORDING] ✅ {track_name.upper()} mono WAV saved → {fname}")
+    # ────────────────────────────────────────────────────────────────────────
 
     # Pipeline
     pipeline = Pipeline(
@@ -284,6 +328,7 @@ IG: https://www.instagram.com/sukanyaclasses
             transport.input(),
             llm,
             transport.output(),
+            audiobuffer,  # ← Native recording (after output so both tracks captured)
         ]
     )
 
@@ -303,6 +348,9 @@ IG: https://www.instagram.com/sukanyaclasses
 
     async def on_client_connected(transport, client):
         logger.info(f"Starting outbound call conversation (Gemini Live). Client: {client}")
+        # Start native Pipecat recording
+        await audiobuffer.start_recording()
+        logger.info("[RECORDING] 🎙️ Native recording started")
         
         # PROPER INITIALIZATION
         context = LLMContext(
@@ -324,6 +372,9 @@ IG: https://www.instagram.com/sukanyaclasses
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
         logger.info("Outbound call ended")
+        # Stop recording — flushes buffered audio and fires on_audio_data / on_track_audio_data
+        await audiobuffer.stop_recording()
+        logger.info("[RECORDING] 🎙️ Native recording stopped")
         await task.cancel()
 
     runner = PipelineRunner(handle_sigint=handle_sigint)

@@ -1,5 +1,5 @@
 # Pipecat AI with required features
-pipecat-ai[websocket,openai,silero]>=0.0.86
+pipecat-ai[websocket,openai,silero,sarvam,google]>=0.0.86
 
 # Vobiz telephony integration (from PyPI)
 pipecat-vobiz>=0.0.2

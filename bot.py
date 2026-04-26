@@ -4,7 +4,9 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
+import datetime
 import os
+import wave
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -12,6 +14,7 @@ from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
+from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.frames.frames import LLMContextFrame, TextFrame
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
@@ -26,8 +29,11 @@ from pipecat.runner.types import RunnerArguments
 from pipecat.runner.utils import parse_telephony_websocket
 from pipecat.serializers.vobiz import VobizFrameSerializer
 from pipecat.services.openai.llm import OpenAILLMService
-from pipecat.services.deepgram.stt import DeepgramSTTService
-from pipecat.services.deepgram.tts import DeepgramTTSService
+# from pipecat.services.deepgram.stt import DeepgramSTTService
+# from pipecat.services.deepgram.tts import DeepgramTTSService
+from pipecat.services.google.llm import GoogleLLMService
+from pipecat.services.sarvam.stt import SarvamSTTService
+from pipecat.services.sarvam.tts import SarvamTTSService
 from pipecat.transports.base_transport import BaseTransport
 from pipecat.transports.websocket.fastapi import (
     FastAPIWebsocketParams,
@@ -45,20 +51,29 @@ except ImportError:
     smart_turn_analyzer = None
 
 
-async def run_bot(transport: BaseTransport, handle_sigint: bool):
+async def run_bot(transport: BaseTransport, handle_sigint: bool, phone_number: str = None, call_id: str = None):
+    # ── NativeRecording ─────────────────────────────────────────────────────
+    # Records inside the Pipecat pipeline at full 24kHz quality.
+    # Stereo: user audio on the left channel, bot TTS on the right channel.
+    audiobuffer = AudioBufferProcessor(
+        num_channels=2,         # stereo: user=L, bot=R
+        enable_turn_audio=True, # also emit per-turn clips via on_*_turn_audio_data
+    )
+    # ────────────────────────────────────────────────────────────────────────
     llm = OpenAILLMService(
         api_key=os.getenv("OPENAI_API_KEY"),
         model="gpt-4o-mini"
     )
 
-    stt = DeepgramSTTService(
-        api_key=os.getenv("DEEPGRAM_API_KEY"),
-        model="nova-2-general"
+    stt = SarvamSTTService(
+        api_key=os.getenv("SARVAM_API_KEY"),
+        sample_rate=16000,
     )
 
-    tts = DeepgramTTSService(
-        api_key=os.getenv("DEEPGRAM_API_KEY"),
-        voice="aura-asteria-en",
+    tts = SarvamTTSService(
+        api_key=os.getenv("SARVAM_API_KEY"),
+        settings=SarvamTTSService.Settings(voice="aditya", model="bulbul:v3"),
+        sample_rate=24000,
     )
 
     messages = [
@@ -88,12 +103,13 @@ async def run_bot(transport: BaseTransport, handle_sigint: bool):
 
     pipeline = Pipeline(
         [
-            transport.input(),  # Websocket input from client
-            stt,  # Speech-To-Text
+            transport.input(),           # Websocket input from client
+            stt,                         # Speech-To-Text
             context_aggregator.user(),
-            llm,  # LLM
-            tts,  # Text-To-Speech
-            transport.output(),  # Websocket output to client
+            llm,                         # LLM
+            tts,                         # Text-To-Speech
+            transport.output(),          # Websocket output to client
+            audiobuffer,                 # ← Native recording (after output so both tracks captured)
             context_aggregator.assistant(),
         ]
     )
@@ -101,8 +117,8 @@ async def run_bot(transport: BaseTransport, handle_sigint: bool):
     task = PipelineTask(
         pipeline,
         params=PipelineParams(
-            audio_in_sample_rate=8000,   # Vobiz MULAW input (8kHz telephony)
-            audio_out_sample_rate=8000,  # Deepgram MULAW output (8kHz telephony)
+            audio_in_sample_rate=16000,
+            audio_out_sample_rate=24000,
             enable_metrics=True,
             enable_usage_metrics=True,
         ),
@@ -137,8 +153,45 @@ async def run_bot(transport: BaseTransport, handle_sigint: bool):
         duration = time.time() - session_state.get("turn_start_time", time.time())
         logger.info(f"User finished speaking (Turn Stopped, Duration: {duration:.2f}s)")
 
+    # ── Recording event handlers ─────────────────────────────────────────────
+    @audiobuffer.event_handler("on_audio_data")
+    async def on_audio_data(buffer, audio, sample_rate, num_channels):
+        """Fires at end of call (or when buffer_size threshold is hit).
+        Saves a single stereo WAV: user=left channel, bot=right channel."""
+        os.makedirs("recordings", exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        label = call_id or ts
+        fname = f"recordings/call_{label}_stereo.wav"
+        with wave.open(fname, "wb") as wf:
+            wf.setnchannels(num_channels)  # 2
+            wf.setsampwidth(2)             # 16-bit PCM
+            wf.setframerate(sample_rate)   # 24000 Hz
+            wf.writeframes(audio)
+        logger.info(f"[RECORDING] ✅ Stereo WAV saved → {fname} "
+                    f"({num_channels}ch, {sample_rate}Hz, {len(audio)//2//num_channels//sample_rate:.1f}s)")
+
+    @audiobuffer.event_handler("on_track_audio_data")
+    async def on_track_audio_data(buffer, user_audio, bot_audio, sample_rate, num_channels):
+        """Also saves separate user/bot mono WAVs alongside the stereo file."""
+        os.makedirs("recordings", exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        label = call_id or ts
+        for track_name, track_audio in (("user", user_audio), ("bot", bot_audio)):
+            fname = f"recordings/call_{label}_{track_name}.wav"
+            with wave.open(fname, "wb") as wf:
+                wf.setnchannels(1)              # mono per track
+                wf.setsampwidth(2)              # 16-bit PCM
+                wf.setframerate(sample_rate)    # 24000 Hz
+                wf.writeframes(track_audio)
+            logger.info(f"[RECORDING] ✅ {track_name.upper()} mono WAV saved → {fname}")
+    # ────────────────────────────────────────────────────────────────────────
+
     async def on_client_connected(transport, client):
         logger.info(f"Starting outbound call conversation. Client: {client}")
+        # Start native Pipecat recording
+        await audiobuffer.start_recording()
+        logger.info("[RECORDING] 🎙️ Native recording started")
+
         # TRIGGER INSTANT GREETING
         # Instead of waiting for the LLM to generate a response, we provide a pre-defined greeting.
         # This eliminates the initial 7-10s delay.
@@ -157,6 +210,9 @@ async def run_bot(transport: BaseTransport, handle_sigint: bool):
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
         logger.info("Outbound call ended")
+        # Stop recording — this flushes buffered audio and fires on_audio_data / on_track_audio_data
+        await audiobuffer.stop_recording()
+        logger.info("[RECORDING] 🎙️ Native recording stopped")
         await task.cancel()
 
     runner = PipelineRunner(handle_sigint=handle_sigint)
@@ -210,4 +266,4 @@ async def bot(runner_args: RunnerArguments, call_id: str = None, stream_id: str 
 
     handle_sigint = runner_args.handle_sigint
 
-    await run_bot(transport, handle_sigint)
+    await run_bot(transport, handle_sigint, phone_number=None, call_id=call_id)
