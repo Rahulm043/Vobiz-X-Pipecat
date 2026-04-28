@@ -1,6 +1,6 @@
 """transcriber.py
 
-Post-call transcription using Gemini 2.5 Flash.
+Post-call transcription using Gemini 1.5 Flash.
 Sends the stereo WAV recording and gets back a diarized transcript
 with speaker labels (user vs bot) in JSON format.
 """
@@ -9,6 +9,7 @@ import asyncio
 import base64
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -46,7 +47,7 @@ async def transcribe_call(
     recording_file: str = None,
 ) -> List[Dict[str, str]]:
     """
-    Transcribe a call recording using Gemini 2.5 Flash.
+    Transcribe a call recording using Gemini 1.5 Flash with retry logic.
 
     Args:
         call_id: The call ID to look up the recording
@@ -112,8 +113,8 @@ async def transcribe_call(
     if audio_path.endswith(".mp3"):
         mime_type = "audio/mp3"
 
-    # Call Gemini API — using Gemini 2.5 Flash for best audio understanding
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    # Call Gemini API — using gemini-3.1-flash-lite-preview
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key={api_key}"
 
     payload = {
         "contents": [
@@ -137,53 +138,62 @@ async def transcribe_call(
         },
     }
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-                timeout=aiohttp.ClientTimeout(total=300),
-            ) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    logger.error(f"[TRANSCRIBER] Gemini API error ({response.status}): {error_text}")
-                    return []
-
-                result = await response.json()
-
-        # Parse the response
-        candidates = result.get("candidates", [])
-        if not candidates:
-            logger.warning("[TRANSCRIBER] No candidates in Gemini response")
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=aiohttp.ClientTimeout(total=300),
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        break
+                    elif response.status == 503 and attempt < max_retries - 1:
+                        wait_time = (2 ** attempt) + 2
+                        logger.warning(f"[TRANSCRIBER] Gemini 503 (Busy). Retrying in {wait_time}s... (Attempt {attempt+1}/{max_retries})")
+                        await asyncio.sleep(wait_time)
+                        continue
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"[TRANSCRIBER] Gemini API error ({response.status}): {error_text}")
+                        return []
+        except asyncio.TimeoutError:
+            if attempt < max_retries - 1:
+                logger.warning(f"[TRANSCRIBER] Timeout. Retrying... (Attempt {attempt+1}/{max_retries})")
+                continue
+            logger.error(f"[TRANSCRIBER] Final timeout transcribing call {call_id}")
+            return []
+        except Exception as e:
+            logger.error(f"[TRANSCRIBER] Error on attempt {attempt+1}: {e}")
+            if attempt < max_retries - 1: continue
             return []
 
-        content = candidates[0].get("content", {})
-        parts = content.get("parts", [])
-        if not parts:
-            logger.warning("[TRANSCRIBER] No parts in Gemini response")
-            return []
-
-        raw_text = parts[0].get("text", "").strip()
-
-        # Parse JSON from the response
-        transcript = _parse_transcript_json(raw_text)
-
-        if transcript:
-            logger.info(f"[TRANSCRIBER] ✅ Got {len(transcript)} transcript entries for call {call_id}")
-        else:
-            logger.warning(f"[TRANSCRIBER] Failed to parse transcript for call {call_id}")
-
-        return transcript
-
-    except asyncio.TimeoutError:
-        logger.error(f"[TRANSCRIBER] Timeout transcribing call {call_id}")
+    # Parse the response
+    candidates = result.get("candidates", [])
+    if not candidates:
+        logger.warning("[TRANSCRIBER] No candidates in Gemini response")
         return []
-    except Exception as e:
-        logger.error(f"[TRANSCRIBER] Error transcribing call {call_id}: {e}")
-        import traceback
-        traceback.print_exc()
+
+    content = candidates[0].get("content", {})
+    parts = content.get("parts", [])
+    if not parts:
+        logger.warning("[TRANSCRIBER] No parts in Gemini response")
         return []
+
+    raw_text = parts[0].get("text", "").strip()
+
+    # Parse JSON from the response
+    transcript = _parse_transcript_json(raw_text)
+
+    if transcript:
+        logger.info(f"[TRANSCRIBER] ✅ Got {len(transcript)} transcript entries for call {call_id}")
+    else:
+        logger.warning(f"[TRANSCRIBER] Failed to parse transcript for call {call_id}")
+
+    return transcript
 
 
 def _parse_transcript_json(raw_text: str) -> List[Dict[str, str]]:
@@ -241,6 +251,9 @@ async def transcribe_and_store(call_id: str, recording_file: str = None):
     This is meant to be called as a background task after a call ends.
     """
     try:
+        # Small delay to ensure file write buffers are flushed
+        await asyncio.sleep(2)
+        
         transcript = await transcribe_call(call_id, recording_file)
         if transcript:
             from call_manager import get_call_manager
