@@ -100,7 +100,7 @@ export default function NewCampaign() {
                 <p>Create a bulk outbound calling campaign</p>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
+            <div className="two-col-grid stretch">
                 {/* Left: Config */}
                 <div>
                     <div className="card mb-3">
@@ -136,20 +136,20 @@ export default function NewCampaign() {
                                 <input type="number" min={5} max={300} value={callGapSeconds} onChange={(e) => setCallGapSeconds(parseInt(e.target.value) || 30)} />
                             </div>
                         )}
+
+                        <button className="btn-primary" style={{ width: '100%', marginTop: '1.5rem' }} onClick={startCampaign} disabled={launching || recipients.length === 0}>
+                            <Play size={16} /> {launching ? 'Launching Campaign...' : `Launch Campaign (${recipients.length} recipients)`}
+                        </button>
                     </div>
 
                     {error && (
-                        <div className="card mb-2" style={{
+                        <div className="card mt-2" style={{
                             background: 'var(--error-bg)', border: '1px solid rgba(239,68,68,0.2)',
                             padding: '0.75rem 1rem', color: 'var(--error)', fontSize: '0.875rem',
                         }}>
                             <AlertCircle size={14} style={{ marginRight: 6 }} /> {error}
                         </div>
                     )}
-
-                    <button className="btn-primary" style={{ width: '100%' }} onClick={startCampaign} disabled={launching || recipients.length === 0}>
-                        <Play size={16} /> {launching ? 'Launching Campaign...' : `Launch Campaign (${recipients.length} recipients)`}
-                    </button>
                 </div>
 
                 {/* Right: Recipients */}
@@ -216,13 +216,27 @@ export default function NewCampaign() {
                                         <tbody>
                                             {recipients.map((r, i) => (
                                                 <tr key={i}>
-                                                    <td className="text-dim">{i + 1}</td>
-                                                    <td className="mono">{r.phone_number}</td>
-                                                    <td>{r.name || '—'}</td>
-                                                    <td>
+                                                    {/* Desktop Cells */}
+                                                    <td className="desktop-cell text-dim">{i + 1}</td>
+                                                    <td className="desktop-cell mono">{r.phone_number}</td>
+                                                    <td className="desktop-cell">{r.name || '—'}</td>
+                                                    <td className="desktop-cell">
                                                         <button className="btn-ghost" onClick={() => removeRecipient(i)}>
                                                             <Trash2 size={14} style={{ color: 'var(--error)' }} />
                                                         </button>
+                                                    </td>
+                                                    {/* Mobile Cell */}
+                                                    <td className="mobile-cell">
+                                                        <div className="mono" style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text)', marginBottom: '5px' }}>
+                                                            {r.phone_number}
+                                                        </div>
+                                                        {r.name && <div className="text-dim text-sm" style={{ marginBottom: '2px' }}>{r.name}</div>}
+                                                        
+                                                        <div className="badge-status">
+                                                            <button className="btn-ghost" style={{ padding: '0.4rem' }} onClick={(e) => { e.stopPropagation(); removeRecipient(i); }}>
+                                                                <Trash2 size={16} style={{ color: 'var(--error)' }} />
+                                                            </button>
+                                                        </div>
                                                     </td>
                                                 </tr>
                                             ))}

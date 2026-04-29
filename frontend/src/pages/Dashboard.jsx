@@ -125,28 +125,6 @@ export default function Dashboard() {
                     </button>
                 </div>
             </div>
-
-            {/* Agent Status Card */}
-            <div className="agent-status-card">
-                <div className="agent-status-left">
-                    <div className={`status-dot-lg ${agentStatus.status}`} />
-                    <div className="agent-status-text">
-                        <h3>{statusLabel}</h3>
-                        <span>{statusDetail}</span>
-                    </div>
-                </div>
-                {agentStatus.status === 'idle' && (
-                    <button className="btn-primary" onClick={() => navigate('/call')}>
-                        <PhoneCall size={16} /> New Call
-                    </button>
-                )}
-                {(agentStatus.status === 'on_campaign') && (
-                    <button className="btn-secondary" onClick={() => navigate(`/campaigns/${agentStatus.campaign_id}`)}>
-                        <Eye size={16} /> View Campaign
-                    </button>
-                )}
-            </div>
-
             {/* Stats Grid */}
             <div className="stats-grid">
                 <div className="stat-card">
@@ -177,6 +155,27 @@ export default function Dashboard() {
                         <div className="stat-label">Failed / Rejected</div>
                     </div>
                 </div>
+            </div>
+
+            {/* Agent Status Card (Now below stats) */}
+            <div className="agent-status-card">
+                <div className="agent-status-left">
+                    <div className={`status-dot-lg ${agentStatus.status}`} />
+                    <div className="agent-status-text">
+                        <h3>{statusLabel}</h3>
+                        <span>{statusDetail}</span>
+                    </div>
+                </div>
+                {agentStatus.status === 'idle' && (
+                    <button className="btn-primary" onClick={() => navigate('/call')}>
+                        <PhoneCall size={16} /> New Call
+                    </button>
+                )}
+                {(agentStatus.status === 'on_campaign') && (
+                    <button className="btn-secondary" onClick={() => navigate(`/campaigns/${agentStatus.campaign_id}`)}>
+                        <Eye size={16} /> View Campaign
+                    </button>
+                )}
             </div>
 
             {/* Recent Call Log */}
@@ -210,16 +209,34 @@ export default function Dashboard() {
                         <tbody>
                             {calls.map((call) => (
                                 <tr key={call.call_id} onClick={() => setInspectorCallId(call.call_id)}>
-                                    <td className="mono">{call.phone_number}</td>
-                                    <td>{call.recipient_name || '—'}</td>
-                                    <td><span className={`badge ${call.call_type}`}>{call.call_type}</span></td>
-                                    <td><span className={`badge ${call.status}`}>{call.status}</span></td>
-                                    <td>{call.duration_minutes ? `${call.duration_minutes} min` : formatDuration(call.duration_seconds)}</td>
-                                    <td className="text-dim text-sm">{formatDate(call.created_at)}</td>
-                                    <td>
+                                    {/* Desktop Cells */}
+                                    <td className="desktop-cell mono">{call.phone_number}</td>
+                                    <td className="desktop-cell">{call.recipient_name || '—'}</td>
+                                    <td className="desktop-cell"><span className={`badge ${call.call_type}`}>{call.call_type}</span></td>
+                                    <td className="desktop-cell"><span className={`badge ${call.status}`}>{call.status}</span></td>
+                                    <td className="desktop-cell">{call.duration_minutes ? `${call.duration_minutes} min` : formatDuration(call.duration_seconds)}</td>
+                                    <td className="desktop-cell text-dim text-sm">{formatDate(call.created_at)}</td>
+                                    <td className="desktop-cell">
                                         <button className="btn-ghost" onClick={(e) => { e.stopPropagation(); setInspectorCallId(call.call_id); }}>
                                             <ArrowUpRight size={14} />
                                         </button>
+                                    </td>
+                                    {/* Mobile Cell */}
+                                    <td className="mobile-cell">
+                                        <div className="mono" style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text)', marginBottom: '5px' }}>
+                                            {call.phone_number}
+                                        </div>
+                                        {call.recipient_name && <div className="text-dim text-sm" style={{ marginBottom: '5px' }}>{call.recipient_name}</div>}
+                                        
+                                        <span className={`badge ${call.status} badge-status`}>{call.status}</span>
+                                        
+                                        <div className="flex" style={{ gap: '0.4rem', fontSize: '0.75rem', color: 'var(--text-dim)', alignItems: 'center', flexWrap: 'wrap' }}>
+                                            <span className={`badge ${call.call_type}`}>{call.call_type}</span>
+                                            <span>•</span>
+                                            <span>{call.duration_minutes ? `${call.duration_minutes} min` : formatDuration(call.duration_seconds)}</span>
+                                            <span>•</span>
+                                            <span>{formatDate(call.created_at)}</span>
+                                        </div>
                                     </td>
                                 </tr>
                             ))}

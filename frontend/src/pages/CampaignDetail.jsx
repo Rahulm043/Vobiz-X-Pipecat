@@ -143,17 +143,34 @@ export default function CampaignDetail() {
                         <tbody>
                             {calls.map((call, i) => (
                                 <tr key={call.call_id} onClick={() => setInspectorCallId(call.call_id)}>
-                                    <td className="text-dim">{i + 1}</td>
-                                    <td className="mono">{call.phone_number}</td>
-                                    <td>{call.recipient_name || '—'}</td>
-                                    <td><span className={`badge ${call.status}`}>{call.status}</span></td>
-                                    <td>{formatDuration(call.duration_seconds)}</td>
-                                    <td className="text-dim text-sm">{call.end_reason || '—'}</td>
-                                    <td className="text-dim text-sm">{formatDate(call.created_at)}</td>
-                                    <td>
+                                    {/* Desktop Cells */}
+                                    <td className="desktop-cell text-dim">{i + 1}</td>
+                                    <td className="desktop-cell mono">{call.phone_number}</td>
+                                    <td className="desktop-cell">{call.recipient_name || '—'}</td>
+                                    <td className="desktop-cell"><span className={`badge ${call.status}`}>{call.status}</span></td>
+                                    <td className="desktop-cell">{formatDuration(call.duration_seconds)}</td>
+                                    <td className="desktop-cell text-dim text-sm">{call.end_reason || '—'}</td>
+                                    <td className="desktop-cell text-dim text-sm">{formatDate(call.created_at)}</td>
+                                    <td className="desktop-cell">
                                         <button className="btn-ghost" onClick={(e) => { e.stopPropagation(); setInspectorCallId(call.call_id); }}>
                                             <ArrowUpRight size={14} />
                                         </button>
+                                    </td>
+                                    {/* Mobile Cell */}
+                                    <td className="mobile-cell">
+                                        <div className="mono" style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text)', marginBottom: '5px' }}>
+                                            {call.phone_number}
+                                        </div>
+                                        {call.recipient_name && <div className="text-dim text-sm" style={{ marginBottom: '5px' }}>{call.recipient_name}</div>}
+                                        
+                                        <span className={`badge ${call.status} badge-status`}>{call.status}</span>
+                                        
+                                        <div className="flex" style={{ gap: '0.4rem', fontSize: '0.75rem', color: 'var(--text-dim)', alignItems: 'center', flexWrap: 'wrap' }}>
+                                            <span>{formatDuration(call.duration_seconds)}</span>
+                                            {call.end_reason && <><span>•</span><span>{call.end_reason}</span></>}
+                                            <span>•</span>
+                                            <span>{formatDate(call.created_at)}</span>
+                                        </div>
                                     </td>
                                 </tr>
                             ))}

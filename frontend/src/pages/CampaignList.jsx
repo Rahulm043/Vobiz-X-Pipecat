@@ -43,7 +43,7 @@ export default function CampaignList() {
                     <h1>Campaigns</h1>
                     <p>Manage your outbound calling campaigns</p>
                 </div>
-                <button className="btn-primary" onClick={() => navigate('/campaigns/new')}>
+                <button className="btn-primary highlight" onClick={() => navigate('/campaigns/new')}>
                     <Plus size={16} /> New Campaign
                 </button>
             </div>

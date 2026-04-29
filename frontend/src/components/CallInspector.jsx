@@ -113,8 +113,8 @@ function RecordingPlayer({ recordingFiles }) {
 
             <div className="recording-controls">
                 <button className="btn-ghost" onClick={restart}><SkipBack size={16} /></button>
-                <button className="btn-primary" style={{ borderRadius: '50%', padding: '0.5rem' }} onClick={togglePlay}>
-                    {isPlaying ? <Pause size={16} /> : <Play size={16} />}
+                <button className="btn-primary" style={{ width: '42px', height: '42px', borderRadius: '50%', padding: 0, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={togglePlay}>
+                    {isPlaying ? <Pause size={20} /> : <Play size={20} fill="currentColor" style={{ marginLeft: '2px' }} />}
                 </button>
                 <span className="text-sm mono text-dim" style={{ marginLeft: 'auto' }}>
                     {formatDuration(audioRef.current?.currentTime || 0)} / {formatDuration(duration)}

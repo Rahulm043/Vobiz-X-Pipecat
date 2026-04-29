@@ -4,7 +4,7 @@ import { WebSocketTransport, ProtobufFrameSerializer } from '@pipecat-ai/websock
 import { PipecatClientProvider, PipecatClientAudio, usePipecatClient, useRTVIClientEvent } from '@pipecat-ai/client-react';
 import {
     Phone, PhoneOff, PhoneCall, Mic, MicOff, Loader2,
-    MessageSquare, Radio,
+    MessageSquare, Radio, AlertCircle,
 } from 'lucide-react';
 
 const API = '';
@@ -136,57 +136,87 @@ export default function SingleCall() {
                 <p>Make an individual SIP call or test with a web call</p>
             </div>
 
-            {/* Mode Toggle */}
-            <div className="inspector-tabs" style={{ maxWidth: 300, marginBottom: '1.5rem' }}>
-                <button className={`inspector-tab ${mode === 'sip' ? 'active' : ''}`} onClick={() => setMode('sip')}>
-                    <PhoneCall size={14} style={{ marginRight: 4 }} /> SIP Call
-                </button>
-                <button className={`inspector-tab ${mode === 'web' ? 'active' : ''}`} onClick={() => setMode('web')}>
-                    <Radio size={14} style={{ marginRight: 4 }} /> Web Call
-                </button>
-            </div>
+            <div className="two-col-grid" style={{ alignItems: 'start' }}>
+                {/* Left: Call Control */}
+                <div>
+                    <div className="inspector-tabs" style={{ maxWidth: 300, marginBottom: '1.5rem' }}>
+                        <button className={`inspector-tab ${mode === 'sip' ? 'active' : ''}`} onClick={() => setMode('sip')}>
+                            <PhoneCall size={14} style={{ marginRight: 4 }} /> SIP Call
+                        </button>
+                        <button className={`inspector-tab ${mode === 'web' ? 'active' : ''}`} onClick={() => setMode('web')}>
+                            <Radio size={14} style={{ marginRight: 4 }} /> Web Call
+                        </button>
+                    </div>
 
-            {mode === 'sip' ? (
-                <div className="card" style={{ maxWidth: 480 }}>
-                    <div className="form-group">
-                        <label>Phone Number</label>
-                        <div style={{ display: 'flex', gap: '0.5rem' }}>
-                            <span style={{
-                                background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border)',
-                                borderRadius: 'var(--radius-sm)', padding: '0.7rem 0.75rem', color: 'var(--text-dim)',
-                                fontSize: '0.9rem', fontWeight: 500,
-                            }}>+91</span>
-                            <input
-                                type="tel"
-                                placeholder="9876543210"
-                                value={phoneNumber}
-                                onChange={(e) => setPhoneNumber(e.target.value)}
-                                onKeyDown={(e) => e.key === 'Enter' && handleSipCall()}
-                            />
+                    {mode === 'sip' ? (
+                        <div className="card">
+                            <h3 className="section-title flex-center"><Phone size={18} /> Call Details</h3>
+                            <div className="form-group">
+                                <label>Phone Number</label>
+                                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                                    <span style={{
+                                        background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border)',
+                                        borderRadius: 'var(--radius-sm)', padding: '0.7rem 0.75rem', color: 'var(--text-dim)',
+                                        fontSize: '0.9rem', fontWeight: 500,
+                                    }}>+91</span>
+                                    <input
+                                        type="tel"
+                                        placeholder="9876543210"
+                                        value={phoneNumber}
+                                        onChange={(e) => setPhoneNumber(e.target.value)}
+                                        onKeyDown={(e) => e.key === 'Enter' && handleSipCall()}
+                                    />
+                                </div>
+                            </div>
+
+                            {dialResult && (
+                                <div className={`card ${dialResult.success ? '' : ''}`} style={{
+                                    background: dialResult.success ? 'var(--success-bg)' : 'var(--error-bg)',
+                                    border: `1px solid ${dialResult.success ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)'}`,
+                                    padding: '0.75rem 1rem', marginBottom: '1rem', fontSize: '0.875rem',
+                                    color: dialResult.success ? 'var(--success)' : 'var(--error)',
+                                }}>
+                                    {dialResult.message}
+                                </div>
+                            )}
+
+                            <button className="btn-primary" onClick={handleSipCall} disabled={isDialing || !phoneNumber.trim()} style={{ width: '100%' }}>
+                                {isDialing ? <Loader2 size={16} className="animate-spin" /> : <PhoneCall size={16} />}
+                                {isDialing ? 'Dialing...' : 'Call Now'}
+                            </button>
+                        </div>
+                    ) : (
+                        <PipecatClientProvider client={pipecatClient}>
+                            <WebCallUI />
+                        </PipecatClientProvider>
+                    )}
+                </div>
+
+                {/* Right: Info & Tips */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+                    <div className="card">
+                        <h3 className="section-title flex-center"><AlertCircle size={18} /> How it works</h3>
+                        <div className="text-sm text-dim" style={{ lineHeight: 1.6 }}>
+                            <p style={{ marginBottom: '1rem' }}>
+                                <strong style={{ color: 'var(--text-secondary)' }}>SIP Call:</strong> Uses the Vobiz API to dial a real phone number. The agent will speak once the call is connected.
+                            </p>
+                            <p>
+                                <strong style={{ color: 'var(--text-secondary)' }}>Web Call:</strong> Uses your browser's microphone to talk to the AI agent directly in this tab. Perfect for testing.
+                            </p>
                         </div>
                     </div>
 
-                    {dialResult && (
-                        <div className={`card ${dialResult.success ? '' : ''}`} style={{
-                            background: dialResult.success ? 'var(--success-bg)' : 'var(--error-bg)',
-                            border: `1px solid ${dialResult.success ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)'}`,
-                            padding: '0.75rem 1rem', marginBottom: '1rem', fontSize: '0.875rem',
-                            color: dialResult.success ? 'var(--success)' : 'var(--error)',
-                        }}>
-                            {dialResult.message}
-                        </div>
-                    )}
-
-                    <button className="btn-primary" onClick={handleSipCall} disabled={isDialing || !phoneNumber.trim()} style={{ width: '100%' }}>
-                        {isDialing ? <Loader2 size={16} /> : <PhoneCall size={16} />}
-                        {isDialing ? 'Dialing...' : 'Call Now'}
-                    </button>
+                    <div className="card">
+                        <h3 className="section-title flex-center"><MessageSquare size={18} /> Call Tips</h3>
+                        <ul className="text-sm text-dim" style={{ paddingLeft: '1.25rem', lineHeight: 1.8 }}>
+                            <li>Ensure you have sufficient balance in Vobiz.</li>
+                            <li>Use international format without the '+' sign for API.</li>
+                            <li>Web calls require microphone permissions.</li>
+                            <li>Check logs on the dashboard for detailed transcripts.</li>
+                        </ul>
+                    </div>
                 </div>
-            ) : (
-                <PipecatClientProvider client={pipecatClient}>
-                    <WebCallUI />
-                </PipecatClientProvider>
-            )}
+            </div>
         </div>
     );
 }

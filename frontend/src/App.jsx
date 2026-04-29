@@ -1,5 +1,5 @@
 import React from 'react';
-import { Routes, Route, NavLink, useLocation } from 'react-router-dom';
+import { Routes, Route, NavLink, useLocation, Navigate } from 'react-router-dom';
 import {
   LayoutDashboard, Phone, Megaphone, Plus, Settings, Activity,
 } from 'lucide-react';
@@ -13,7 +13,7 @@ import './index.css';
 const NAV_ITEMS = [
   { path: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { path: '/call', icon: Phone, label: 'Single Call' },
-  { path: '/campaigns', icon: Megaphone, label: 'Campaigns' },
+  { path: '/campaigns', icon: Megaphone, label: 'Campaigns', end: true },
   { path: '/campaigns/new', icon: Plus, label: 'New Campaign' },
 ];
 
@@ -29,14 +29,12 @@ function Sidebar() {
         </div>
       </div>
       <nav className="sidebar-nav">
-        {NAV_ITEMS.map(({ path, icon: Icon, label }) => (
+        {NAV_ITEMS.map(({ path, icon: Icon, label, end }) => (
           <NavLink
             key={path}
             to={path}
-            end={path === '/'}
-            className={({ isActive }) =>
-              `nav-item ${isActive ? 'active' : ''}`
-            }
+            end={end || path === '/'}
+            className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
           >
             <Icon size={18} />
             <span>{label}</span>
@@ -61,6 +59,7 @@ function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/call" element={<SingleCall />} />
+          <Route path="/single-call" element={<Navigate to="/call" replace />} />
           <Route path="/campaigns" element={<CampaignList />} />
           <Route path="/campaigns/new" element={<NewCampaign />} />
           <Route path="/campaigns/:id" element={<CampaignDetail />} />
