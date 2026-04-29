@@ -15,5 +15,8 @@ aiohttp
 # Environment variables
 python-dotenv
 
+# Supabase
+supabase
+
 # Logging
 loguru

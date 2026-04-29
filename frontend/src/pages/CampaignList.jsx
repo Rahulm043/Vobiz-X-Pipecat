@@ -1,10 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
+import useSWR from 'swr';
 import { useNavigate } from 'react-router-dom';
 import {
     Megaphone, Plus, Play, Pause, Check, X, Clock,
 } from 'lucide-react';
-
-const API = '';
+import { swrFetcher } from '../utils/api.js';
 
 function formatDate(iso) {
     if (!iso) return '—';
@@ -13,23 +13,10 @@ function formatDate(iso) {
 
 export default function CampaignList() {
     const navigate = useNavigate();
-    const [campaigns, setCampaigns] = useState([]);
+    
+    const { data = { campaigns: [] } } = useSWR(`/api/campaigns`, swrFetcher, { refreshInterval: 8000 });
+    const campaigns = data.campaigns || [];
 
-    useEffect(() => {
-        fetchCampaigns();
-        const interval = setInterval(fetchCampaigns, 8000);
-        return () => clearInterval(interval);
-    }, []);
-
-    const fetchCampaigns = async () => {
-        try {
-            const res = await fetch(`${API}/api/campaigns`);
-            const data = await res.json();
-            setCampaigns(data.campaigns || []);
-        } catch (e) {
-            console.error('Campaign fetch error:', e);
-        }
-    };
 
     const getProgressPercent = (campaign) => {
         const s = campaign.stats || {};

@@ -1,63 +1,44 @@
 """call_store.py
 
-JSON-file-based persistence for call logs and campaign data.
-All data stored alongside recordings in the recordings/ directory.
-Designed for easy migration to Supabase later.
+Supabase-based persistence for call logs and campaign data.
+Replaces the local JSON storage to make the application stateless.
 """
 
-import json
 import math
 import os
-import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from supabase import create_client, Client
+from dotenv import load_dotenv
 
-# --------------- Paths --------------- #
+load_dotenv(override=True)
 
-RECORDINGS_DIR = os.path.join(os.path.dirname(__file__), "recordings")
-CALL_LOG_FILE = os.path.join(RECORDINGS_DIR, "call_log.json")
-CAMPAIGNS_FILE = os.path.join(RECORDINGS_DIR, "campaigns.json")
+# --------------- Supabase Config --------------- #
 
-os.makedirs(RECORDINGS_DIR, exist_ok=True)
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_ANON_KEY") or os.getenv("VITE_SUPABASE_ANON_KEY")
 
+if not SUPABASE_URL or not SUPABASE_KEY:
+    print("[WARNING] Supabase credentials not found in environment!")
+    supabase: Optional[Client] = None
+else:
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --------------- Helpers --------------- #
-
-_lock = threading.Lock()
-
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
-
 def _new_id() -> str:
     return str(uuid.uuid4())
-
 
 def round_up_minutes(seconds: float) -> int:
     """Round seconds up to nearest minute. 0s -> 0, 3s -> 1, 60s -> 1, 61s -> 2."""
     if seconds <= 0:
         return 0
     return math.ceil(seconds / 60)
-
-
-def _read_json(path: str) -> list:
-    if not os.path.exists(path):
-        return []
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data if isinstance(data, list) else []
-    except (json.JSONDecodeError, IOError):
-        return []
-
-
-def _write_json(path: str, data: list):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False, default=str)
-
 
 # --------------- Call Record --------------- #
 
@@ -100,27 +81,36 @@ def make_call_record(
         "metadata": {},
     }
 
-
 # --------------- Call CRUD --------------- #
 
 def save_call(call: Dict[str, Any]):
-    """Save or update a call record in the log."""
-    with _lock:
-        calls = _read_json(CALL_LOG_FILE)
-        # Update if exists, else append
-        idx = next((i for i, c in enumerate(calls) if c["call_id"] == call["call_id"]), None)
-        if idx is not None:
-            calls[idx] = call
-        else:
-            calls.append(call)
-        _write_json(CALL_LOG_FILE, calls)
-
+    """Save or update a call record in Supabase."""
+    if not supabase: return
+    
+    # Supabase upsert uses the primary key (call_id)
+    try:
+        supabase.table("calls").upsert(call).execute()
+    except Exception as e:
+        print(f"[ERROR] Supabase save_call failed: {e}")
 
 def get_call(call_id: str) -> Optional[Dict[str, Any]]:
     """Get a call record by ID (either internal call_id or vobiz_call_uuid)."""
-    calls = _read_json(CALL_LOG_FILE)
-    return next((c for c in calls if c["call_id"] == call_id or c.get("vobiz_call_uuid") == call_id), None)
-
+    if not supabase: return None
+    
+    try:
+        # Try by call_id first
+        res = supabase.table("calls").select("*").eq("call_id", call_id).execute()
+        if res.data:
+            return res.data[0]
+        
+        # Then by vobiz_call_uuid
+        res = supabase.table("calls").select("*").eq("vobiz_call_uuid", call_id).execute()
+        if res.data:
+            return res.data[0]
+    except Exception as e:
+        print(f"[ERROR] Supabase get_call failed: {e}")
+    
+    return None
 
 def list_calls(
     campaign_id: Optional[str] = None,
@@ -131,44 +121,73 @@ def list_calls(
     date_str: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """List call records with optional filters. Returns newest first."""
-    calls = _read_json(CALL_LOG_FILE)
-
-    if campaign_id is not None:
-        calls = [c for c in calls if c.get("campaign_id") == campaign_id]
-    if status:
-        calls = [c for c in calls if c.get("status") == status]
-    if call_type:
-        calls = [c for c in calls if c.get("call_type") == call_type]
-    if date_str:
-        calls = [c for c in calls if c.get("created_at", "").startswith(date_str)]
-
-    # Sort newest first
-    calls.sort(key=lambda c: c.get("created_at", ""), reverse=True)
-    return calls[offset: offset + limit]
-
+    if not supabase: return []
+    
+    try:
+        query = supabase.table("calls").select("*").order("created_at", desc=True)
+        
+        if campaign_id:
+            query = query.eq("campaign_id", campaign_id)
+        if status:
+            query = query.eq("status", status)
+        if call_type:
+            query = query.eq("call_type", call_type)
+        if date_str:
+            # Simple prefix match for created_at
+            query = query.like("created_at", f"{date_str}%")
+            
+        res = query.range(offset, offset + limit - 1).execute()
+        return res.data or []
+    except Exception as e:
+        print(f"[ERROR] Supabase list_calls failed: {e}")
+        return []
 
 def update_call(call_id: str, **fields) -> Optional[Dict[str, Any]]:
-    """Update specific fields on a call record. Searches by call_id or vobiz_call_uuid."""
-    with _lock:
-        calls = _read_json(CALL_LOG_FILE)
-        idx = next((i for i, c in enumerate(calls) if c["call_id"] == call_id or c.get("vobiz_call_uuid") == call_id), None)
-        if idx is None:
-            return None
-        for k, v in fields.items():
-            calls[idx][k] = v
-        # Auto-calculate duration_minutes when duration_seconds changes
-        if "duration_seconds" in fields:
-            calls[idx]["duration_minutes"] = round_up_minutes(fields["duration_seconds"])
-        _write_json(CALL_LOG_FILE, calls)
-        return calls[idx]
+    """Update specific fields on a call record."""
+    if not supabase: return None
+    
+    try:
+        # First, find the primary key if call_id is a vobiz_call_uuid
+        actual_call_id = call_id
+        if not _is_valid_uuid(call_id):
+            existing = get_call(call_id)
+            if existing:
+                actual_call_id = existing["call_id"]
+            else:
+                return None
 
+        # Auto-calculate duration_minutes if duration_seconds is provided
+        if "duration_seconds" in fields:
+            fields["duration_minutes"] = round_up_minutes(fields["duration_seconds"])
+
+        res = supabase.table("calls").update(fields).eq("call_id", actual_call_id).execute()
+        if res.data:
+            return res.data[0]
+    except Exception as e:
+        print(f"[ERROR] Supabase update_call failed: {e}")
+    
+    return None
+
+def _is_valid_uuid(val: str) -> bool:
+    try:
+        uuid.UUID(str(val))
+        return True
+    except ValueError:
+        return False
 
 def count_calls(campaign_id: Optional[str] = None) -> int:
-    calls = _read_json(CALL_LOG_FILE)
-    if campaign_id:
-        return sum(1 for c in calls if c.get("campaign_id") == campaign_id)
-    return len(calls)
-
+    if not supabase: return 0
+    
+    try:
+        query = supabase.table("calls").select("*", count="exact")
+        if campaign_id:
+            query = query.eq("campaign_id", campaign_id)
+        
+        res = query.execute()
+        return res.count if res.count is not None else 0
+    except Exception as e:
+        print(f"[ERROR] Supabase count_calls failed: {e}")
+        return 0
 
 # --------------- Campaign CRUD --------------- #
 
@@ -201,47 +220,46 @@ def make_campaign_record(
         },
     }
 
-
 def save_campaign(campaign: Dict[str, Any]):
     """Save or update a campaign record."""
-    with _lock:
-        campaigns = _read_json(CAMPAIGNS_FILE)
-        idx = next(
-            (i for i, c in enumerate(campaigns) if c["campaign_id"] == campaign["campaign_id"]),
-            None,
-        )
-        if idx is not None:
-            campaigns[idx] = campaign
-        else:
-            campaigns.append(campaign)
-        _write_json(CAMPAIGNS_FILE, campaigns)
-
+    if not supabase: return
+    
+    try:
+        supabase.table("campaigns").upsert(campaign).execute()
+    except Exception as e:
+        print(f"[ERROR] Supabase save_campaign failed: {e}")
 
 def get_campaign(campaign_id: str) -> Optional[Dict[str, Any]]:
-    campaigns = _read_json(CAMPAIGNS_FILE)
-    return next((c for c in campaigns if c["campaign_id"] == campaign_id), None)
-
+    if not supabase: return None
+    
+    try:
+        res = supabase.table("campaigns").select("*").eq("campaign_id", campaign_id).execute()
+        if res.data:
+            return res.data[0]
+    except Exception as e:
+        print(f"[ERROR] Supabase get_campaign failed: {e}")
+    return None
 
 def list_campaigns(limit: int = 50) -> List[Dict[str, Any]]:
-    campaigns = _read_json(CAMPAIGNS_FILE)
-    campaigns.sort(key=lambda c: c.get("created_at", ""), reverse=True)
-    return campaigns[:limit]
-
+    if not supabase: return []
+    
+    try:
+        res = supabase.table("campaigns").select("*").order("created_at", desc=True).limit(limit).execute()
+        return res.data or []
+    except Exception as e:
+        print(f"[ERROR] Supabase list_campaigns failed: {e}")
+        return []
 
 def update_campaign(campaign_id: str, **fields) -> Optional[Dict[str, Any]]:
-    with _lock:
-        campaigns = _read_json(CAMPAIGNS_FILE)
-        idx = next(
-            (i for i, c in enumerate(campaigns) if c["campaign_id"] == campaign_id),
-            None,
-        )
-        if idx is None:
-            return None
-        for k, v in fields.items():
-            campaigns[idx][k] = v
-        _write_json(CAMPAIGNS_FILE, campaigns)
-        return campaigns[idx]
-
+    if not supabase: return None
+    
+    try:
+        res = supabase.table("campaigns").update(fields).eq("campaign_id", campaign_id).execute()
+        if res.data:
+            return res.data[0]
+    except Exception as e:
+        print(f"[ERROR] Supabase update_campaign failed: {e}")
+    return None
 
 def refresh_campaign_stats(campaign_id: str) -> Dict[str, int]:
     """Recompute campaign stats from call records."""
@@ -272,7 +290,6 @@ def refresh_campaign_stats(campaign_id: str) -> Dict[str, int]:
     update_campaign(campaign_id, stats=stats)
     return stats
 
-
 # --------------- Agent Stats --------------- #
 
 def get_agent_stats(
@@ -280,60 +297,61 @@ def get_agent_stats(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None
 ) -> Dict[str, Any]:
-    """Get aggregated stats for a given day or range (ISO strings)."""
-    calls = _read_json(CALL_LOG_FILE)
+    """Get aggregated stats for a given day or range."""
+    if not supabase: return {}
+    
+    try:
+        query = supabase.table("calls").select("duration_seconds, status, created_at")
+        
+        if start_date and end_date:
+            query = query.gte("created_at", start_date).lte("created_at", end_date)
+            label = f"{start_date[:10]} to {end_date[:10]}"
+        elif date_str:
+            query = query.like("created_at", f"{date_str}%")
+            label = date_str
+        else:
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            query = query.like("created_at", f"{today}%")
+            label = today
+            
+        res = query.execute()
+        filtered_calls = res.data or []
+        
+        total_calls = len(filtered_calls)
+        total_seconds = sum(c.get("duration_seconds", 0) or 0 for c in filtered_calls)
+        total_minutes = sum(round_up_minutes(c.get("duration_seconds", 0) or 0) for c in filtered_calls)
 
-    if start_date and end_date:
-        # Range filtering (inclusive)
-        # Assuming created_at is ISO format
-        filtered_calls = [
-            c for c in calls 
-            if c.get("created_at") and start_date <= c.get("created_at") <= end_date
+        connected = sum(1 for c in filtered_calls if c.get("status") == "completed")
+        failed = sum(1 for c in filtered_calls if c.get("status") in ("failed", "error"))
+        rejected = sum(1 for c in filtered_calls if c.get("status") == "rejected")
+        in_progress = sum(1 for c in filtered_calls if c.get("status") in ("ringing", "connected", "in_progress"))
+
+        # Daily breakdown
+        breakdown = {}
+        for c in filtered_calls:
+            day = c.get("created_at", "")[:10]
+            if not day: continue
+            if day not in breakdown:
+                breakdown[day] = {"calls": 0, "minutes": 0}
+            breakdown[day]["calls"] += 1
+            breakdown[day]["minutes"] += round_up_minutes(c.get("duration_seconds", 0) or 0)
+
+        sorted_breakdown = [
+            {"date": d, "calls": v["calls"], "minutes": v["minutes"]}
+            for d, v in sorted(breakdown.items())
         ]
-        label = f"{start_date[:10]} to {end_date[:10]}"
-    elif date_str:
-        # Legacy single day filtering
-        filtered_calls = [c for c in calls if c.get("created_at", "").startswith(date_str)]
-        label = date_str
-    else:
-        # Default to today UTC
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        filtered_calls = [c for c in calls if c.get("created_at", "").startswith(today)]
-        label = today
 
-    total_calls = len(filtered_calls)
-    total_seconds = sum(c.get("duration_seconds", 0) for c in filtered_calls)
-    total_minutes = sum(round_up_minutes(c.get("duration_seconds", 0)) for c in filtered_calls)
-
-    connected = sum(1 for c in filtered_calls if c.get("status") == "completed")
-    failed = sum(1 for c in filtered_calls if c.get("status") in ("failed", "error"))
-    rejected = sum(1 for c in filtered_calls if c.get("status") == "rejected")
-    in_progress = sum(1 for c in filtered_calls if c.get("status") in ("ringing", "connected", "in_progress"))
-
-    # Daily breakdown for charting
-    breakdown = {}
-    for c in filtered_calls:
-        day = c.get("created_at", "")[:10]
-        if not day: continue
-        if day not in breakdown:
-            breakdown[day] = {"calls": 0, "minutes": 0}
-        breakdown[day]["calls"] += 1
-        breakdown[day]["minutes"] += round_up_minutes(c.get("duration_seconds", 0))
-
-    # Sort breakdown by date
-    sorted_breakdown = [
-        {"date": d, "calls": v["calls"], "minutes": v["minutes"]}
-        for d, v in sorted(breakdown.items())
-    ]
-
-    return {
-        "label": label,
-        "total_calls": total_calls,
-        "total_seconds": total_seconds,
-        "total_minutes": total_minutes,
-        "connected": connected,
-        "failed": failed,
-        "rejected": rejected,
-        "in_progress": in_progress,
-        "breakdown": sorted_breakdown
-    }
+        return {
+            "label": label,
+            "total_calls": total_calls,
+            "total_seconds": total_seconds,
+            "total_minutes": total_minutes,
+            "connected": connected,
+            "failed": failed,
+            "rejected": rejected,
+            "in_progress": in_progress,
+            "breakdown": sorted_breakdown
+        }
+    except Exception as e:
+        print(f"[ERROR] Supabase get_agent_stats failed: {e}")
+        return {}

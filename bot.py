@@ -42,6 +42,7 @@ from pipecat.transports.websocket.fastapi import (
 
 load_dotenv(override=True)
 import time
+import supabase_storage
 
 # Initialize Smart Turn Analyzer once at startup to avoid per-call loading latency (15-20s)
 try:
@@ -169,6 +170,19 @@ async def run_bot(transport: BaseTransport, handle_sigint: bool, phone_number: s
             wf.writeframes(audio)
         logger.info(f"[RECORDING] ✅ Stereo WAV saved → {fname} "
                     f"({num_channels}ch, {sample_rate}Hz, {len(audio)//2//num_channels//sample_rate:.1f}s)")
+        
+        # Upload to Supabase Storage
+        if call_id:
+            supabase_path = supabase_storage.upload_recording(fname, call_id)
+            if supabase_path:
+                from call_store import update_call
+                # Fetch existing record to get dict of recording_files
+                import call_store
+                existing = call_store.get_call(call_id)
+                files = existing.get("recording_files", {}) if existing else {}
+                files["stereo"] = f"call_{label}_stereo.wav"
+                files["stereo_remote"] = supabase_path
+                update_call(call_id, recording_files=files)
 
     @audiobuffer.event_handler("on_track_audio_data")
     async def on_track_audio_data(buffer, user_audio, bot_audio, sample_rate, num_channels):
@@ -184,6 +198,17 @@ async def run_bot(transport: BaseTransport, handle_sigint: bool, phone_number: s
                 wf.setframerate(sample_rate)    # 24000 Hz
                 wf.writeframes(track_audio)
             logger.info(f"[RECORDING] ✅ {track_name.upper()} mono WAV saved → {fname}")
+            
+            # Upload to Supabase Storage
+            if call_id:
+                supabase_path = supabase_storage.upload_recording(fname, call_id)
+                if supabase_path:
+                    import call_store
+                    existing = call_store.get_call(call_id)
+                    files = existing.get("recording_files", {}) if existing else {}
+                    files[track_name] = f"call_{label}_{track_name}.wav"
+                    files[f"{track_name}_remote"] = supabase_path
+                    call_store.update_call(call_id, recording_files=files)
     # ────────────────────────────────────────────────────────────────────────
 
     async def on_client_connected(transport, client):

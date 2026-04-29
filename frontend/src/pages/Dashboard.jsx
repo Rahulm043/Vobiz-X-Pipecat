@@ -1,12 +1,12 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
+import useSWR from 'swr';
 import { useNavigate } from 'react-router-dom';
 import {
     Phone, Clock, CheckCircle, XCircle, Activity, PhoneCall,
     BarChart3, ArrowUpRight, RefreshCw, Eye, Megaphone,
 } from 'lucide-react';
 import CallInspector from '../components/CallInspector.jsx';
-
-const API = '';
+import { swrFetcher } from '../utils/api.js';
 
 function formatDuration(seconds) {
     if (!seconds) return '0s';
@@ -36,26 +36,20 @@ const RANGE_OPTIONS = [
 
 export default function Dashboard() {
     const navigate = useNavigate();
-    const [agentStatus, setAgentStatus] = useState({ status: 'idle' });
-    const [stats, setStats] = useState({});
-    const [calls, setCalls] = useState([]);
     const [inspectorCallId, setInspectorCallId] = useState(null);
     const [timeRange, setTimeRange] = useState('today');
 
     const getDatesForRange = useCallback((range) => {
         const end = new Date();
+        end.setHours(23, 59, 59, 999); // End of today
+
         const start = new Date();
+        start.setHours(0, 0, 0, 0); // Start of today
         
-        if (range === 'today') {
-            return { 
-                start: new Date(new Date().setHours(0,0,0,0)).toISOString(),
-                end: end.toISOString()
-            };
-        }
         if (range === '7d') start.setDate(end.getDate() - 7);
         else if (range === '30d') start.setDate(end.getDate() - 30);
         else if (range === '90d') start.setDate(end.getDate() - 90);
-        else if (range === 'all') start.setFullYear(2020); // Far back
+        else if (range === 'all') start.setFullYear(2020);
 
         return { 
             start: start.toISOString(), 
@@ -63,30 +57,19 @@ export default function Dashboard() {
         };
     }, []);
 
-    const fetchData = useCallback(async () => {
-        try {
-            const { start, end } = getDatesForRange(timeRange);
-            const statsUrl = `${API}/api/agent/stats?start_date=${start}&end_date=${end}`;
+    const { start, end } = getDatesForRange(timeRange);
+    const statsUrl = `/api/agent/stats?start_date=${start}&end_date=${end}`;
 
-            const [statusRes, statsRes, callsRes] = await Promise.all([
-                fetch(`${API}/api/agent/status`),
-                fetch(statsUrl),
-                fetch(`${API}/api/calls?limit=25`),
-            ]);
-            setAgentStatus(await statusRes.json());
-            setStats(await statsRes.json());
-            const callData = await callsRes.json();
-            setCalls(callData.calls || []);
-        } catch (e) {
-            console.error('Dashboard fetch error:', e);
-        }
-    }, [timeRange, getDatesForRange]);
+    const { data: agentStatus = { status: 'idle' }, mutate: mutateStatus } = useSWR('/api/agent/status', swrFetcher, { refreshInterval: 5000 });
+    const { data: stats = {}, mutate: mutateStats } = useSWR(statsUrl, swrFetcher, { refreshInterval: 5000 });
+    const { data: callsData = { calls: [] }, mutate: mutateCalls } = useSWR('/api/calls?limit=25', swrFetcher, { refreshInterval: 5000 });
+    const calls = callsData.calls || [];
 
-    useEffect(() => {
-        fetchData();
-        const interval = setInterval(fetchData, 5000);
-        return () => clearInterval(interval);
-    }, [fetchData]);
+    const handleRefresh = () => {
+        mutateStatus();
+        mutateStats();
+        mutateCalls();
+    };
 
     const statusLabel = {
         idle: 'Agent Idle',
@@ -120,7 +103,7 @@ export default function Dashboard() {
                             </button>
                         ))}
                     </div>
-                    <button className="btn-secondary" onClick={fetchData}>
+                    <button className="btn-secondary" onClick={handleRefresh}>
                         <RefreshCw size={16} />
                     </button>
                 </div>

@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import useSWR from 'swr';
 import {
     X, Phone, Clock, Calendar, Tag, FileText, Headphones,
     Play, Pause, SkipBack, User, Bot, Radio,
 } from 'lucide-react';
-
-const API = '';
+import { authFetch, swrFetcher } from '../utils/api.js';
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:7860';
 
 function formatDuration(seconds) {
     if (!seconds) return '0s';
@@ -20,21 +21,41 @@ function formatDateTime(iso) {
     });
 }
 
-function RecordingPlayer({ recordingFiles }) {
+function RecordingPlayer({ callId, recordingFiles }) {
     const [track, setTrack] = useState('stereo');
     const [isPlaying, setIsPlaying] = useState(false);
     const [progress, setProgress] = useState(0);
     const [duration, setDuration] = useState(0);
+    const [audioSrc, setAudioSrc] = useState(null);
     const audioRef = useRef(null);
-
-    const trackFile = recordingFiles?.[track];
-    const audioSrc = trackFile ? `${API}/recordings/${trackFile}` : null;
 
     useEffect(() => {
         setIsPlaying(false);
         setProgress(0);
         setDuration(0);
-    }, [track]);
+
+        // Try to get signed URL for remote storage
+        const remoteKey = `${track}_remote`;
+        const hasRemote = recordingFiles && recordingFiles[remoteKey];
+        const hasLocal = recordingFiles && recordingFiles[track];
+
+        if (callId && hasRemote) {
+            authFetch(`/api/calls/${callId}/recording-url/${track}`)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.url) setAudioSrc(data.url);
+                    else if (hasLocal) setAudioSrc(`${API_BASE}/recordings/${recordingFiles[track]}`);
+                })
+                .catch(err => {
+                    console.error("Failed to fetch signed URL:", err);
+                    if (hasLocal) setAudioSrc(`${API_BASE}/recordings/${recordingFiles[track]}`);
+                });
+        } else if (hasLocal) {
+            setAudioSrc(`${API_BASE}/recordings/${recordingFiles[track]}`);
+        } else {
+            setAudioSrc(null);
+        }
+    }, [track, callId, recordingFiles]);
 
     useEffect(() => {
         const audio = audioRef.current;
@@ -129,34 +150,16 @@ function RecordingPlayer({ recordingFiles }) {
 }
 
 export default function CallInspector({ callId, onClose }) {
-    const [call, setCall] = useState(null);
     const [tab, setTab] = useState('overview');
 
-    const fetchCall = useCallback(async () => {
-        if (!callId) return;
-        try {
-            const r = await fetch(`${API}/api/calls/${callId}`);
-            const data = await r.json();
-            setCall(data);
-        } catch (e) {
-            console.error('CallInspector fetch error:', e);
+    const { data: call, mutate } = useSWR(callId ? `/api/calls/${callId}` : null, swrFetcher, {
+        refreshInterval: (data) => {
+            if (!data) return 3000; // Poll while initially loading if desired, or 0. Let's use 0 until we know.
+            const isLive = ['queued', 'ringing', 'connected', 'in_progress'].includes(data.status);
+            const transcriptPending = data.status === 'completed' && (!data.transcript || data.transcript.length === 0);
+            return (isLive || transcriptPending) ? 3000 : 0;
         }
-    }, [callId]);
-
-    useEffect(() => {
-        fetchCall();
-    }, [fetchCall]);
-
-    // Auto-refresh for live calls (ringing/connected) or calls where transcript is still pending
-    useEffect(() => {
-        if (!call) return;
-        const isLive = ['queued', 'ringing', 'connected', 'in_progress'].includes(call.status);
-        const transcriptPending = call.status === 'completed' && (!call.transcript || call.transcript.length === 0);
-        if (!isLive && !transcriptPending) return;
-
-        const interval = setInterval(fetchCall, 3000);
-        return () => clearInterval(interval);
-    }, [call, fetchCall]);
+    });
 
     if (!call) return null;
 
@@ -274,7 +277,7 @@ export default function CallInspector({ callId, onClose }) {
                 {tab === 'recording' && (
                     <div className="inspector-section">
                         <h4>Recording</h4>
-                        <RecordingPlayer recordingFiles={call.recording_files} />
+                        <RecordingPlayer callId={call.call_id} recordingFiles={call.recording_files} />
                     </div>
                 )}
             </div>

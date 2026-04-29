@@ -25,7 +25,10 @@ load_dotenv(override=True)
 
 import call_store
 import csv_parser
+import supabase_storage
 from call_manager import get_call_manager
+from auth_backend import get_current_user
+from fastapi import Depends
 
 # Bot selection logic
 use_live = os.getenv("USE_LIVE_BOT", "false").lower() == "true"
@@ -207,9 +210,18 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# Dynamic CORS origins
+allowed_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+public_url = os.getenv("PUBLIC_URL")
+if public_url:
+    allowed_origins.append(public_url.rstrip("/"))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for testing
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -220,7 +232,31 @@ os.makedirs("recordings", exist_ok=True)
 app.mount("/recordings", StaticFiles(directory="recordings"), name="recordings")
 
 
-@app.post("/start")
+# Global exception handler to ensure CORS headers on errors
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    response = JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+    )
+    # Add CORS headers manually to error responses
+    origin = request.headers.get("origin")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
+
+# Debug middleware to log headers
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    auth_header = request.headers.get("Authorization")
+    print(f"[DEBUG] {request.method} {request.url.path} - Auth: {auth_header[:20] if auth_header else 'None'}...")
+    response = await call_next(request)
+    return response
+
+@app.post("/start", dependencies=[Depends(get_current_user)])
 async def initiate_outbound_call(request: Request) -> JSONResponse:
     """Handle outbound call request and initiate call via Vobiz."""
     print("Received outbound call request")
@@ -766,7 +802,7 @@ async def initiate_transfer(request: Request) -> JSONResponse:
         raise HTTPException(status_code=500, detail=f"Transfer error: {str(e)}")
 
 
-@app.get("/active-calls")
+@app.get("/active-calls", dependencies=[Depends(get_current_user)])
 async def get_active_calls() -> JSONResponse:
     """List all currently active calls"""
     print("[ACTIVE CALLS] Fetching active calls list")
@@ -793,14 +829,14 @@ async def get_active_calls() -> JSONResponse:
 # =================== CALL MANAGER API =================== #
 
 
-@app.get("/api/agent/status")
+@app.get("/api/agent/status", dependencies=[Depends(get_current_user)])
 async def api_agent_status():
     """Get current agent status (idle / on_call / on_campaign)."""
     cm = get_call_manager()
     return JSONResponse(cm.get_agent_status())
 
 
-@app.get("/api/agent/stats")
+@app.get("/api/agent/stats", dependencies=[Depends(get_current_user)])
 async def api_agent_stats(date: str = None, start_date: str = None, end_date: str = None):
     """Get aggregated call statistics for a date or range."""
     return JSONResponse(call_store.get_agent_stats(
@@ -810,7 +846,7 @@ async def api_agent_stats(date: str = None, start_date: str = None, end_date: st
     ))
 
 
-@app.post("/api/calls/single")
+@app.post("/api/calls/single", dependencies=[Depends(get_current_user)])
 async def api_single_call(request: Request):
     """Initiate a single outbound SIP call via CallManager."""
     data = await request.json()
@@ -830,7 +866,7 @@ async def api_single_call(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/calls")
+@app.get("/api/calls", dependencies=[Depends(get_current_user)])
 async def api_list_calls(
     campaign_id: str = None,
     status: str = None,
@@ -849,7 +885,7 @@ async def api_list_calls(
     return JSONResponse({"calls": calls, "total": call_store.count_calls(campaign_id)})
 
 
-@app.get("/api/calls/{call_id}")
+@app.get("/api/calls/{call_id}", dependencies=[Depends(get_current_user)])
 async def api_get_call(call_id: str):
     """Get detailed call record."""
     call = call_store.get_call(call_id)
@@ -858,7 +894,27 @@ async def api_get_call(call_id: str):
     return JSONResponse(call)
 
 
-@app.post("/api/campaigns")
+@app.get("/api/calls/{call_id}/recording-url/{track}", dependencies=[Depends(get_current_user)])
+async def api_get_recording_url(call_id: str, track: str):
+    """Get a signed URL for a specific recording track (stereo, user, bot)."""
+    call = call_store.get_call(call_id)
+    if not call:
+        raise HTTPException(status_code=404, detail="Call not found")
+    
+    recording_files = call.get("recording_files", {})
+    storage_path = recording_files.get(f"{track}_remote")
+    
+    if not storage_path:
+        raise HTTPException(status_code=404, detail=f"Remote recording for {track} not found")
+    
+    signed_url = supabase_storage.get_signed_url(storage_path)
+    if not signed_url:
+        raise HTTPException(status_code=500, detail="Failed to generate signed URL")
+        
+    return JSONResponse({"url": signed_url})
+
+
+@app.post("/api/campaigns", dependencies=[Depends(get_current_user)])
 async def api_create_campaign(request: Request):
     """Create and start a new campaign."""
     data = await request.json()
@@ -882,14 +938,14 @@ async def api_create_campaign(request: Request):
     return JSONResponse(campaign)
 
 
-@app.get("/api/campaigns")
+@app.get("/api/campaigns", dependencies=[Depends(get_current_user)])
 async def api_list_campaigns():
     """List all campaigns."""
     campaigns = call_store.list_campaigns()
     return JSONResponse({"campaigns": campaigns})
 
 
-@app.get("/api/campaigns/{campaign_id}")
+@app.get("/api/campaigns/{campaign_id}", dependencies=[Depends(get_current_user)])
 async def api_get_campaign(campaign_id: str):
     """Get campaign details + refresh stats."""
     campaign = call_store.get_campaign(campaign_id)
@@ -901,7 +957,7 @@ async def api_get_campaign(campaign_id: str):
     return JSONResponse({"campaign": campaign, "calls": calls})
 
 
-@app.post("/api/campaigns/{campaign_id}/pause")
+@app.post("/api/campaigns/{campaign_id}/pause", dependencies=[Depends(get_current_user)])
 async def api_pause_campaign(campaign_id: str):
     cm = get_call_manager()
     try:
@@ -911,7 +967,7 @@ async def api_pause_campaign(campaign_id: str):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.post("/api/campaigns/{campaign_id}/resume")
+@app.post("/api/campaigns/{campaign_id}/resume", dependencies=[Depends(get_current_user)])
 async def api_resume_campaign(campaign_id: str):
     cm = get_call_manager()
     try:
@@ -921,14 +977,14 @@ async def api_resume_campaign(campaign_id: str):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.post("/api/campaigns/{campaign_id}/cancel")
+@app.post("/api/campaigns/{campaign_id}/cancel", dependencies=[Depends(get_current_user)])
 async def api_cancel_campaign(campaign_id: str):
     cm = get_call_manager()
     await cm.cancel_campaign(campaign_id)
     return JSONResponse({"status": "cancelled", "campaign_id": campaign_id})
 
 
-@app.post("/api/upload/recipients")
+@app.post("/api/upload/recipients", dependencies=[Depends(get_current_user)])
 async def api_upload_recipients(
     file: UploadFile = File(None),
     request: Request = None,
@@ -1176,7 +1232,8 @@ async def _run_web_bot(websocket: WebSocket):
     )
 
     # Unique call_id per session so recordings don't overwrite each other
-    web_call_id = f"web-{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    import uuid
+    web_call_id = str(uuid.uuid4())
     print(f"[WEB] Session ID: {web_call_id}")
 
     # Register this web call with CallManager so it shows in the dashboard

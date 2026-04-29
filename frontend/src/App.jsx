@@ -1,13 +1,15 @@
 import React from 'react';
 import { Routes, Route, NavLink, useLocation, Navigate } from 'react-router-dom';
 import {
-  LayoutDashboard, Phone, Megaphone, Plus, Settings, Activity,
+  LayoutDashboard, Phone, Megaphone, Plus, Settings, Activity, LogOut, User,
 } from 'lucide-react';
 import Dashboard from './pages/Dashboard.jsx';
 import SingleCall from './pages/SingleCall.jsx';
 import CampaignList from './pages/CampaignList.jsx';
 import NewCampaign from './pages/NewCampaign.jsx';
 import CampaignDetail from './pages/CampaignDetail.jsx';
+import LoginPage from './pages/LoginPage.jsx';
+import { AuthProvider, useAuth } from './components/AuthProvider.jsx';
 import './index.css';
 
 const NAV_ITEMS = [
@@ -19,6 +21,8 @@ const NAV_ITEMS = [
 
 function Sidebar() {
   const location = useLocation();
+  const { signOut, user } = useAuth();
+  
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">
@@ -42,6 +46,17 @@ function Sidebar() {
         ))}
       </nav>
       <div className="sidebar-footer">
+        <div className="user-profile">
+            <div className="user-avatar">
+                <User size={16} />
+            </div>
+            <div className="user-info">
+                <span className="user-email">{user?.email?.split('@')[0]}</span>
+                <button onClick={signOut} className="btn-signout" title="Sign Out">
+                    <LogOut size={14} />
+                </button>
+            </div>
+        </div>
         <div className="sidebar-agent-badge">
           <div className="agent-dot online" />
           <span>bot_live.py</span>
@@ -51,7 +66,22 @@ function Sidebar() {
   );
 }
 
-function App() {
+function AppContent() {
+  const { session, loading } = useAuth();
+
+  if (loading) {
+    return (
+        <div className="flex-center" style={{ height: '100vh', flexDirection: 'column', gap: '1rem' }}>
+            <div className="spinner-lg" />
+            <span style={{ color: 'var(--text-dim)' }}>Loading session...</span>
+        </div>
+    );
+  }
+
+  if (!session) {
+    return <LoginPage />;
+  }
+
   return (
     <div className="app-layout">
       <Sidebar />
@@ -63,9 +93,18 @@ function App() {
           <Route path="/campaigns" element={<CampaignList />} />
           <Route path="/campaigns/new" element={<NewCampaign />} />
           <Route path="/campaigns/:id" element={<CampaignDetail />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
     </div>
+  );
+}
+
+function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
   );
 }
 

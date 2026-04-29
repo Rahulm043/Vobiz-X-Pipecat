@@ -1,12 +1,12 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState } from 'react';
+import useSWR from 'swr';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
     ArrowLeft, Play, Pause, X, Check, Clock, Phone,
     ArrowUpRight, RefreshCw, XCircle,
 } from 'lucide-react';
 import CallInspector from '../components/CallInspector.jsx';
-
-const API = '';
+import { authFetch, swrFetcher } from '../utils/api.js';
 
 function formatDate(iso) {
     if (!iso) return '—';
@@ -23,40 +23,28 @@ function formatDuration(seconds) {
 export default function CampaignDetail() {
     const { id } = useParams();
     const navigate = useNavigate();
-    const [campaign, setCampaign] = useState(null);
-    const [calls, setCalls] = useState([]);
     const [inspectorCallId, setInspectorCallId] = useState(null);
-    const [loading, setLoading] = useState(true);
 
-    const fetchData = useCallback(async () => {
-        try {
-            const res = await fetch(`${API}/api/campaigns/${id}`);
-            const data = await res.json();
-            setCampaign(data.campaign);
-            setCalls(data.calls || []);
-        } catch (e) {
-            console.error('Campaign detail fetch error:', e);
-        }
-        setLoading(false);
-    }, [id]);
-
-    useEffect(() => {
-        fetchData();
-        const interval = setInterval(fetchData, 4000);
-        return () => clearInterval(interval);
-    }, [fetchData]);
+    const { data, mutate, isLoading } = useSWR(`/api/campaigns/${id}`, swrFetcher, { refreshInterval: 4000 });
+    
+    const campaign = data?.campaign;
+    const calls = data?.calls || [];
 
     const handleAction = async (action) => {
         try {
-            await fetch(`${API}/api/campaigns/${id}/${action}`, { method: 'POST' });
-            fetchData();
+            await authFetch(`/api/campaigns/${id}/${action}`, { method: 'POST' });
+            mutate();
         } catch (e) {
             console.error(`Campaign ${action} error:`, e);
         }
     };
 
-    if (loading || !campaign) {
+    if (isLoading && !campaign) {
         return <div className="fade-in" style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-dim)' }}>Loading...</div>;
+    }
+
+    if (!campaign) {
+        return <div className="fade-in" style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-dim)' }}>Campaign not found.</div>;
     }
 
     const s = campaign.stats || {};
@@ -81,7 +69,7 @@ export default function CampaignDetail() {
                     </p>
                 </div>
                 <div className="flex-center gap-1">
-                    <button className="btn-secondary" onClick={fetchData}><RefreshCw size={14} /></button>
+                    <button className="btn-secondary" onClick={() => mutate()}><RefreshCw size={14} /></button>
                     {isRunning && <button className="btn-warning" onClick={() => handleAction('pause')}><Pause size={14} /> Pause</button>}
                     {isPaused && <button className="btn-primary" onClick={() => handleAction('resume')}><Play size={14} /> Resume</button>}
                     {isActive && <button className="btn-danger" onClick={() => handleAction('cancel')}><X size={14} /> Cancel</button>}

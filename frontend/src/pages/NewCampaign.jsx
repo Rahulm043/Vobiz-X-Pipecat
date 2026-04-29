@@ -4,8 +4,7 @@ import {
     Upload, FileSpreadsheet, Plus, Trash2, Play, AlertCircle,
     Users, Settings2, ArrowRight,
 } from 'lucide-react';
-
-const API = '';
+import { authFetch } from '../utils/api.js';
 
 export default function NewCampaign() {
     const navigate = useNavigate();
@@ -34,7 +33,7 @@ export default function NewCampaign() {
         try {
             const formData = new FormData();
             formData.append('file', file);
-            const res = await fetch(`${API}/api/upload/recipients`, { method: 'POST', body: formData });
+            const res = await authFetch(`/api/upload/recipients`, { method: 'POST', body: formData });
             const data = await res.json();
             setUploadResult(data);
             setRecipients(data.recipients || []);
@@ -49,7 +48,7 @@ export default function NewCampaign() {
         setUploading(true);
         setError(null);
         try {
-            const res = await fetch(`${API}/api/upload/recipients`, {
+            const res = await authFetch(`/api/upload/recipients`, {
                 method: 'POST',
                 body: manualNumbers,
             });
@@ -73,7 +72,7 @@ export default function NewCampaign() {
         setLaunching(true);
         setError(null);
         try {
-            const res = await fetch(`${API}/api/campaigns`, {
+            const res = await authFetch(`/api/campaigns`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({

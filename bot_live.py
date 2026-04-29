@@ -45,6 +45,7 @@ from pipecat.transports.websocket.fastapi import (
 )
 from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
 import transcriber
+import supabase_storage
 
 load_dotenv(override=True)
 
@@ -473,6 +474,14 @@ IG: https://www.instagram.com/sukanyaclasses
         logger.info(f"[RECORDING] ✅ Stereo WAV saved → {fname} "
                     f"({num_channels}ch, {sample_rate}Hz, {len(audio)//2//num_channels//sample_rate:.1f}s)")
         call_state["recording_files"]["stereo"] = f"call_{label}_stereo.wav"
+        
+        # Upload to Supabase Storage
+        if call_id:
+            supabase_path = supabase_storage.upload_recording(fname, call_id)
+            if supabase_path:
+                call_state["recording_files"]["stereo_remote"] = supabase_path
+                from call_store import update_call
+                update_call(call_id, recording_files=call_state["recording_files"])
 
     @audiobuffer.event_handler("on_track_audio_data")
     async def on_track_audio_data(buffer, user_audio, bot_audio, sample_rate, num_channels):
@@ -489,6 +498,12 @@ IG: https://www.instagram.com/sukanyaclasses
                 wf.writeframes(track_audio)
             logger.info(f"[RECORDING] ✅ {track_name.upper()} mono WAV saved → {fname}")
             call_state["recording_files"][track_name] = f"call_{label}_{track_name}.wav"
+            
+            # Upload to Supabase Storage
+            if call_id:
+                supabase_path = supabase_storage.upload_recording(fname, call_id)
+                if supabase_path:
+                    call_state["recording_files"][f"{track_name}_remote"] = supabase_path
 
         # Notify CallManager of all recording files
         try:
