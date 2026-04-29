@@ -1,0 +1,22 @@
+[Unit]
+Description=Vobiz-X-Pipecat AI Voice Agent Backend
+After=network.target nginx.service
+
+[Service]
+Type=simple
+User=rahulm
+WorkingDirectory=/home/rahulm/Vobiz-X-Pipecat
+Environment=PATH=/home/rahulm/Vobiz-X-Pipecat/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/home/rahulm/Vobiz-X-Pipecat/venv/bin/python server.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/home/rahulm/Vobiz-X-Pipecat/recordings
+
+[Install]
+WantedBy=multi-user.target
