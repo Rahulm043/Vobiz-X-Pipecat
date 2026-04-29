@@ -275,25 +275,59 @@ def refresh_campaign_stats(campaign_id: str) -> Dict[str, int]:
 
 # --------------- Agent Stats --------------- #
 
-def get_agent_stats(date_str: Optional[str] = None) -> Dict[str, Any]:
-    """Get aggregated stats for a given day (default: today UTC)."""
-    if not date_str:
-        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
+def get_agent_stats(
+    date_str: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None
+) -> Dict[str, Any]:
+    """Get aggregated stats for a given day or range (ISO strings)."""
     calls = _read_json(CALL_LOG_FILE)
-    day_calls = [c for c in calls if c.get("created_at", "").startswith(date_str)]
 
-    total_calls = len(day_calls)
-    total_seconds = sum(c.get("duration_seconds", 0) for c in day_calls)
-    total_minutes = sum(round_up_minutes(c.get("duration_seconds", 0)) for c in day_calls)
+    if start_date and end_date:
+        # Range filtering (inclusive)
+        # Assuming created_at is ISO format
+        filtered_calls = [
+            c for c in calls 
+            if c.get("created_at") and start_date <= c.get("created_at") <= end_date
+        ]
+        label = f"{start_date[:10]} to {end_date[:10]}"
+    elif date_str:
+        # Legacy single day filtering
+        filtered_calls = [c for c in calls if c.get("created_at", "").startswith(date_str)]
+        label = date_str
+    else:
+        # Default to today UTC
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        filtered_calls = [c for c in calls if c.get("created_at", "").startswith(today)]
+        label = today
 
-    connected = sum(1 for c in day_calls if c.get("status") == "completed")
-    failed = sum(1 for c in day_calls if c.get("status") in ("failed", "error"))
-    rejected = sum(1 for c in day_calls if c.get("status") == "rejected")
-    in_progress = sum(1 for c in day_calls if c.get("status") in ("ringing", "connected", "in_progress"))
+    total_calls = len(filtered_calls)
+    total_seconds = sum(c.get("duration_seconds", 0) for c in filtered_calls)
+    total_minutes = sum(round_up_minutes(c.get("duration_seconds", 0)) for c in filtered_calls)
+
+    connected = sum(1 for c in filtered_calls if c.get("status") == "completed")
+    failed = sum(1 for c in filtered_calls if c.get("status") in ("failed", "error"))
+    rejected = sum(1 for c in filtered_calls if c.get("status") == "rejected")
+    in_progress = sum(1 for c in filtered_calls if c.get("status") in ("ringing", "connected", "in_progress"))
+
+    # Daily breakdown for charting
+    breakdown = {}
+    for c in filtered_calls:
+        day = c.get("created_at", "")[:10]
+        if not day: continue
+        if day not in breakdown:
+            breakdown[day] = {"calls": 0, "minutes": 0}
+        breakdown[day]["calls"] += 1
+        breakdown[day]["minutes"] += round_up_minutes(c.get("duration_seconds", 0))
+
+    # Sort breakdown by date
+    sorted_breakdown = [
+        {"date": d, "calls": v["calls"], "minutes": v["minutes"]}
+        for d, v in sorted(breakdown.items())
+    ]
 
     return {
-        "date": date_str,
+        "label": label,
         "total_calls": total_calls,
         "total_seconds": total_seconds,
         "total_minutes": total_minutes,
@@ -301,4 +335,5 @@ def get_agent_stats(date_str: Optional[str] = None) -> Dict[str, Any]:
         "failed": failed,
         "rejected": rejected,
         "in_progress": in_progress,
+        "breakdown": sorted_breakdown
     }

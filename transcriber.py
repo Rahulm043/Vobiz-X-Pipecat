@@ -114,7 +114,7 @@ async def transcribe_call(
         mime_type = "audio/mp3"
 
     # Call Gemini API — using gemini-3.1-flash-lite-preview
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key={api_key}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key={api_key}"
 
     payload = {
         "contents": [

@@ -801,9 +801,13 @@ async def api_agent_status():
 
 
 @app.get("/api/agent/stats")
-async def api_agent_stats(date: str = None):
-    """Get today's aggregated call statistics."""
-    return JSONResponse(call_store.get_agent_stats(date))
+async def api_agent_stats(date: str = None, start_date: str = None, end_date: str = None):
+    """Get aggregated call statistics for a date or range."""
+    return JSONResponse(call_store.get_agent_stats(
+        date_str=date, 
+        start_date=start_date, 
+        end_date=end_date
+    ))
 
 
 @app.post("/api/calls/single")

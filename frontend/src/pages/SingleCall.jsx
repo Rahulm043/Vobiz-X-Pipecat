@@ -57,7 +57,7 @@ function WebCallUI() {
                 </span>
             </div>
 
-            <div className="transcript" style={{ height: 280, marginBottom: '1rem' }}>
+            <div className="transcript" style={{ minHeight: 320, marginBottom: '1rem' }}>
                 {transcript.length === 0 ? (
                     <div className="empty-state" style={{ padding: '2rem' }}>
                         <MessageSquare size={36} />
@@ -96,7 +96,7 @@ function WebCallUI() {
 // Create client outside component
 const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 const wsUrl = `${protocol}//${window.location.host}/web-ws`;
-const transport = new WebSocketTransport({ wsUrl, serializer: new ProtobufFrameSerializer(), playerSampleRate: 24000, recorderSampleRate: 16000 });
+const transport = new WebSocketTransport({ wsUrl, serializer: new ProtobufFrameSerializer(), playerSampleRate: 16000, recorderSampleRate: 16000 });
 Object.defineProperty(transport, 'isCamEnabled', { get: () => false });
 Object.defineProperty(transport, 'isSharingScreen', { get: () => false });
 const pipecatClient = new PipecatClient({ transport, enableMic: true });

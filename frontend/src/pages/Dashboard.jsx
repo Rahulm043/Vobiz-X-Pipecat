@@ -26,18 +26,51 @@ function formatDate(iso) {
     return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+const RANGE_OPTIONS = [
+    { label: 'Today', value: 'today' },
+    { label: '7D', value: '7d' },
+    { label: '30D', value: '30d' },
+    { label: '90D', value: '90d' },
+    { label: 'All', value: 'all' },
+];
+
 export default function Dashboard() {
     const navigate = useNavigate();
     const [agentStatus, setAgentStatus] = useState({ status: 'idle' });
     const [stats, setStats] = useState({});
     const [calls, setCalls] = useState([]);
     const [inspectorCallId, setInspectorCallId] = useState(null);
+    const [timeRange, setTimeRange] = useState('today');
+
+    const getDatesForRange = useCallback((range) => {
+        const end = new Date();
+        const start = new Date();
+        
+        if (range === 'today') {
+            return { 
+                start: new Date(new Date().setHours(0,0,0,0)).toISOString(),
+                end: end.toISOString()
+            };
+        }
+        if (range === '7d') start.setDate(end.getDate() - 7);
+        else if (range === '30d') start.setDate(end.getDate() - 30);
+        else if (range === '90d') start.setDate(end.getDate() - 90);
+        else if (range === 'all') start.setFullYear(2020); // Far back
+
+        return { 
+            start: start.toISOString(), 
+            end: end.toISOString() 
+        };
+    }, []);
 
     const fetchData = useCallback(async () => {
         try {
+            const { start, end } = getDatesForRange(timeRange);
+            const statsUrl = `${API}/api/agent/stats?start_date=${start}&end_date=${end}`;
+
             const [statusRes, statsRes, callsRes] = await Promise.all([
                 fetch(`${API}/api/agent/status`),
-                fetch(`${API}/api/agent/stats`),
+                fetch(statsUrl),
                 fetch(`${API}/api/calls?limit=25`),
             ]);
             setAgentStatus(await statusRes.json());
@@ -47,7 +80,7 @@ export default function Dashboard() {
         } catch (e) {
             console.error('Dashboard fetch error:', e);
         }
-    }, []);
+    }, [timeRange, getDatesForRange]);
 
     useEffect(() => {
         fetchData();
@@ -75,9 +108,22 @@ export default function Dashboard() {
                     <h1>Dashboard</h1>
                     <p>Real-time overview of your AI calling agent</p>
                 </div>
-                <button className="btn-secondary" onClick={fetchData}>
-                    <RefreshCw size={16} /> Refresh
-                </button>
+                <div className="flex gap-1">
+                    <div className="range-picker">
+                        {RANGE_OPTIONS.map(opt => (
+                            <button
+                                key={opt.value}
+                                className={`range-btn ${timeRange === opt.value ? 'active' : ''}`}
+                                onClick={() => setTimeRange(opt.value)}
+                            >
+                                {opt.label}
+                            </button>
+                        ))}
+                    </div>
+                    <button className="btn-secondary" onClick={fetchData}>
+                        <RefreshCw size={16} />
+                    </button>
+                </div>
             </div>
 
             {/* Agent Status Card */}
