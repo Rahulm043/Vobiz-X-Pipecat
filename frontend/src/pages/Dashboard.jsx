@@ -189,7 +189,7 @@ export default function Dashboard() {
                                 <th>Status</th>
                                 <th>Duration</th>
                                 <th>Time</th>
-                                <th></th>
+                                <th>Source</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -203,9 +203,9 @@ export default function Dashboard() {
                                     <td className="desktop-cell">{call.duration_minutes ? `${call.duration_minutes} min` : formatDuration(call.duration_seconds)}</td>
                                     <td className="desktop-cell text-dim text-sm">{formatDate(call.created_at)}</td>
                                     <td className="desktop-cell">
-                                        <button className="btn-ghost" onClick={(e) => { e.stopPropagation(); setInspectorCallId(call.call_id); }}>
-                                            <ArrowUpRight size={14} />
-                                        </button>
+                                        <div className="source-label">
+                                            {call.campaign_name || 'Single Call'}
+                                        </div>
                                     </td>
                                     {/* Mobile Cell */}
                                     <td className="mobile-cell">
@@ -222,6 +222,8 @@ export default function Dashboard() {
                                             <span>{call.duration_minutes ? `${call.duration_minutes} min` : formatDuration(call.duration_seconds)}</span>
                                             <span>•</span>
                                             <span>{formatDate(call.created_at)}</span>
+                                            <span>•</span>
+                                            <span className="text-primary" style={{ fontWeight: 600 }}>{call.campaign_name || 'Single Call'}</span>
                                         </div>
                                     </td>
                                 </tr>

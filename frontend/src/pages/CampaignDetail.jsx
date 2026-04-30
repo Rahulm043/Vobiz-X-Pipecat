@@ -125,7 +125,6 @@ export default function CampaignDetail() {
                                 <th>Duration</th>
                                 <th>End Reason</th>
                                 <th>Time</th>
-                                <th></th>
                             </tr>
                         </thead>
                         <tbody>
@@ -139,11 +138,6 @@ export default function CampaignDetail() {
                                     <td className="desktop-cell">{formatDuration(call.duration_seconds)}</td>
                                     <td className="desktop-cell text-dim text-sm">{call.end_reason || '—'}</td>
                                     <td className="desktop-cell text-dim text-sm">{formatDate(call.created_at)}</td>
-                                    <td className="desktop-cell">
-                                        <button className="btn-ghost" onClick={(e) => { e.stopPropagation(); setInspectorCallId(call.call_id); }}>
-                                            <ArrowUpRight size={14} />
-                                        </button>
-                                    </td>
                                     {/* Mobile Cell */}
                                     <td className="mobile-cell">
                                         <div className="mono" style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text)', marginBottom: '2px' }}>
