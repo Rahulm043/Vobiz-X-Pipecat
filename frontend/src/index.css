@@ -831,7 +831,7 @@ select {
 .transcript-msg.user {
   align-self: flex-end;
   background: var(--primary);
-  color: white;
+  color: #05070a;
   border-bottom-right-radius: 4px;
 }
 
