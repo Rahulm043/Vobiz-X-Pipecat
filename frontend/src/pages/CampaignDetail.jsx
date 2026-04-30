@@ -146,14 +146,14 @@ export default function CampaignDetail() {
                                     </td>
                                     {/* Mobile Cell */}
                                     <td className="mobile-cell">
-                                        <div className="mono" style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text)', marginBottom: '5px' }}>
+                                        <div className="mono" style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text)', marginBottom: '2px' }}>
                                             {call.phone_number}
                                         </div>
-                                        {call.recipient_name && <div className="text-dim text-sm" style={{ marginBottom: '5px' }}>{call.recipient_name}</div>}
+                                        {call.recipient_name && <div className="text-dim" style={{ fontSize: '0.75rem', marginBottom: '2px' }}>{call.recipient_name}</div>}
                                         
-                                        <span className={`badge ${call.status} badge-status`}>{call.status}</span>
+                                        <span className={`badge ${call.status} badge-status`} style={{ transform: 'scale(0.85)', transformOrigin: 'top right' }}>{call.status}</span>
                                         
-                                        <div className="flex" style={{ gap: '0.4rem', fontSize: '0.75rem', color: 'var(--text-dim)', alignItems: 'center', flexWrap: 'wrap' }}>
+                                        <div className="flex" style={{ gap: '0.3rem', fontSize: '0.7rem', color: 'var(--text-dim)', alignItems: 'center', flexWrap: 'wrap' }}>
                                             <span>{formatDuration(call.duration_seconds)}</span>
                                             {call.end_reason && <><span>•</span><span>{call.end_reason}</span></>}
                                             <span>•</span>

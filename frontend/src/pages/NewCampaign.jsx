@@ -93,7 +93,7 @@ export default function NewCampaign() {
     };
 
     return (
-        <div className="fade-in">
+        <div className="fade-in campaign-page-container">
             <div className="page-header">
                 <h1>New Campaign</h1>
                 <p>Create a bulk outbound calling campaign</p>
@@ -102,7 +102,7 @@ export default function NewCampaign() {
             <div className="two-col-grid stretch">
                 {/* Left: Config */}
                 <div>
-                    <div className="card mb-3">
+                    <div className="card">
                         <h3 className="section-title flex-center"><Settings2 size={18} /> Configuration</h3>
 
                         <div className="form-group">
@@ -136,19 +136,8 @@ export default function NewCampaign() {
                             </div>
                         )}
 
-                        <button className="btn-primary" style={{ width: '100%', marginTop: '1.5rem' }} onClick={startCampaign} disabled={launching || recipients.length === 0}>
-                            <Play size={16} /> {launching ? 'Launching Campaign...' : `Launch Campaign (${recipients.length} recipients)`}
-                        </button>
                     </div>
 
-                    {error && (
-                        <div className="card mt-2" style={{
-                            background: 'var(--error-bg)', border: '1px solid rgba(239,68,68,0.2)',
-                            padding: '0.75rem 1rem', color: 'var(--error)', fontSize: '0.875rem',
-                        }}>
-                            <AlertCircle size={14} style={{ marginRight: 6 }} /> {error}
-                        </div>
-                    )}
                 </div>
 
                 {/* Right: Recipients */}
@@ -226,14 +215,14 @@ export default function NewCampaign() {
                                                     </td>
                                                     {/* Mobile Cell */}
                                                     <td className="mobile-cell">
-                                                        <div className="mono" style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text)', marginBottom: '5px' }}>
+                                                        <div className="mono" style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text)', marginBottom: '2px' }}>
                                                             {r.phone_number}
                                                         </div>
-                                                        {r.name && <div className="text-dim text-sm" style={{ marginBottom: '2px' }}>{r.name}</div>}
+                                                        {r.name && <div className="text-dim" style={{ fontSize: '0.75rem', marginBottom: '2px' }}>{r.name}</div>}
                                                         
                                                         <div className="badge-status">
-                                                            <button className="btn-ghost" style={{ padding: '0.4rem' }} onClick={(e) => { e.stopPropagation(); removeRecipient(i); }}>
-                                                                <Trash2 size={16} style={{ color: 'var(--error)' }} />
+                                                            <button className="btn-ghost" style={{ padding: '0.2rem' }} onClick={(e) => { e.stopPropagation(); removeRecipient(i); }}>
+                                                                <Trash2 size={14} style={{ color: 'var(--error)' }} />
                                                             </button>
                                                         </div>
                                                     </td>
@@ -245,6 +234,19 @@ export default function NewCampaign() {
                             </div>
                         )}
                     </div>
+                </div>
+            </div>
+
+            <div className="campaign-launch-bar">
+                <div className="launch-bar-content">
+                    {error && (
+                        <div className="launch-error">
+                            <AlertCircle size={14} style={{ marginRight: 6 }} /> {error}
+                        </div>
+                    )}
+                    <button className="btn-primary btn-launch" onClick={startCampaign} disabled={launching || recipients.length === 0}>
+                        <Play size={16} /> {launching ? 'Launching Campaign...' : `Launch Campaign (${recipients.length} recipients)`}
+                    </button>
                 </div>
             </div>
         </div>

@@ -19,17 +19,39 @@ const NAV_ITEMS = [
   { path: '/campaigns/new', icon: Plus, label: 'New Campaign' },
 ];
 
-function Sidebar() {
+function ConfirmationModal({ isOpen, onClose, onConfirm, title, message }) {
+  if (!isOpen) return null;
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content" onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <h2>{title}</h2>
+          <p>{message}</p>
+        </div>
+        <div className="modal-actions">
+          <button className="btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn-primary" style={{ background: 'var(--error)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }} onClick={onConfirm}>
+            <LogOut size={16} />
+            Sign Out
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Sidebar({ onLogoutRequest }) {
   const location = useLocation();
-  const { signOut, user } = useAuth();
+  const { user } = useAuth();
+  const [showMenu, setShowMenu] = React.useState(false);
   
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">
-        <Activity size={24} className="brand-icon" />
-        <div>
-          <h2 className="brand-title">BotLive</h2>
-          <span className="brand-sub">Call Manager</span>
+        <img src="/logo2.png" alt="Provaani" className="brand-icon" />
+        <div className="brand-text-container">
+          <h2 className="brand-title">Provaani</h2>
+          <span className="brand-sub">Voice AI Call Manager</span>
         </div>
       </div>
       <nav className="sidebar-nav">
@@ -46,28 +68,38 @@ function Sidebar() {
         ))}
       </nav>
       <div className="sidebar-footer">
-        <div className="user-profile">
-            <div className="user-avatar">
-                <User size={16} />
+        <div 
+            className="user-profile interactive logout-trigger" 
+            onClick={onLogoutRequest}
+            title="Sign Out"
+        >
+            <div className="logout-content">
+                <LogOut size={18} />
+                <span>Logout</span>
             </div>
-            <div className="user-info">
-                <span className="user-email">{user?.email?.split('@')[0]}</span>
-                <button onClick={signOut} className="btn-signout" title="Sign Out">
-                    <LogOut size={14} />
-                </button>
-            </div>
-        </div>
-        <div className="sidebar-agent-badge">
-          <div className="agent-dot online" />
-          <span>bot_live.py</span>
         </div>
       </div>
     </aside>
   );
 }
 
+function MobileHeader() {
+  return (
+    <header className="mobile-header">
+      <div className="mobile-brand">
+        <img src="/logo2.png" alt="Provaani" className="mobile-logo" />
+        <div className="mobile-brand-text">
+          <h2 className="mobile-title">Provaani</h2>
+          <span className="mobile-sub">Voice AI Call Manager</span>
+        </div>
+      </div>
+    </header>
+  );
+}
+
 function AppContent() {
-  const { session, loading } = useAuth();
+  const { session, loading, signOut } = useAuth();
+  const [showLogoutConfirm, setShowLogoutConfirm] = React.useState(false);
 
   if (loading) {
     return (
@@ -84,7 +116,8 @@ function AppContent() {
 
   return (
     <div className="app-layout">
-      <Sidebar />
+      <MobileHeader />
+      <Sidebar onLogoutRequest={() => setShowLogoutConfirm(true)} />
       <main className="main-content">
         <Routes>
           <Route path="/" element={<Dashboard />} />
@@ -96,6 +129,14 @@ function AppContent() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
+
+      <ConfirmationModal 
+        isOpen={showLogoutConfirm}
+        onClose={() => setShowLogoutConfirm(false)}
+        onConfirm={signOut}
+        title="Sign Out?"
+        message="Are you sure you want to log out of Provaani?"
+      />
     </div>
   );
 }

@@ -84,10 +84,13 @@ export default function Dashboard() {
             ? `${agentStatus.campaign_name} — ${agentStatus.campaign_stats?.completed || 0}/${agentStatus.campaign_stats?.total || 0}`
             : 'Waiting for commands';
 
+    const agentName = import.meta.env.VITE_AGENT_NAME;
+
     return (
         <div className="fade-in">
             <div className="page-header flex-between">
                 <div>
+                    {agentName && <div className="agent-name-label">{agentName}</div>}
                     <h1>Dashboard</h1>
                     <p>Real-time overview of your AI calling agent</p>
                 </div>
@@ -206,15 +209,15 @@ export default function Dashboard() {
                                     </td>
                                     {/* Mobile Cell */}
                                     <td className="mobile-cell">
-                                        <div className="mono" style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text)', marginBottom: '5px' }}>
+                                        <div className="mono" style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text)', marginBottom: '2px' }}>
                                             {call.phone_number}
                                         </div>
-                                        {call.recipient_name && <div className="text-dim text-sm" style={{ marginBottom: '5px' }}>{call.recipient_name}</div>}
+                                        {call.recipient_name && <div className="text-dim" style={{ fontSize: '0.75rem', marginBottom: '2px' }}>{call.recipient_name}</div>}
                                         
-                                        <span className={`badge ${call.status} badge-status`}>{call.status}</span>
+                                        <span className={`badge ${call.status} badge-status`} style={{ transform: 'scale(0.85)', transformOrigin: 'top right' }}>{call.status}</span>
                                         
-                                        <div className="flex" style={{ gap: '0.4rem', fontSize: '0.75rem', color: 'var(--text-dim)', alignItems: 'center', flexWrap: 'wrap' }}>
-                                            <span className={`badge ${call.call_type}`}>{call.call_type}</span>
+                                        <div className="flex" style={{ gap: '0.3rem', fontSize: '0.7rem', color: 'var(--text-dim)', alignItems: 'center', flexWrap: 'wrap' }}>
+                                            <span className={`badge ${call.call_type}`} style={{ padding: '0.1rem 0.3rem', fontSize: '0.65rem' }}>{call.call_type}</span>
                                             <span>•</span>
                                             <span>{call.duration_minutes ? `${call.duration_minutes} min` : formatDuration(call.duration_seconds)}</span>
                                             <span>•</span>

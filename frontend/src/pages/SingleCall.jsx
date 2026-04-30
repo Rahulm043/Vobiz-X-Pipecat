@@ -31,7 +31,7 @@ function WebCallUI() {
     useRTVIClientEvent(RTVIEvent.UserTranscript, (d) => setTranscript(p => [...p, { role: 'user', text: d.text }]));
     useRTVIClientEvent(RTVIEvent.BotTranscript, (d) => setTranscript(p => [...p, { role: 'bot', text: d.text }]));
 
-    useEffect(() => { transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [transcript]);
+    useEffect(() => { transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }, [transcript]);
 
     const start = async () => {
         setError(null); setStatus('connecting'); setTranscript([]);
