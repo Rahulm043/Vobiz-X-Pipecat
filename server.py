@@ -214,6 +214,8 @@ app = FastAPI(lifespan=lifespan)
 allowed_origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "https://provaani-main.progressive-digital.xyz",
+    "https://*.vercel.app",
 ]
 public_url = os.getenv("PUBLIC_URL")
 if public_url:
