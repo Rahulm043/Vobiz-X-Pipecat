@@ -395,7 +395,6 @@ async def get_answer_xml(
     # Merge injected body_data from query parameters (contains phone_number)
     if body_data:
         try:
-            import urllib.parse
             injected_data = json.loads(urllib.parse.unquote(body_data))
             parsed_body_data.update(injected_data)
         except Exception as e:
@@ -547,7 +546,7 @@ async def get_answer_xml(
             agent_name = os.getenv("AGENT_NAME")
             org_name = os.getenv("ORGANIZATION_NAME")
             service_host = f"{agent_name}.{org_name}"
-            query_params.append(f"serviceHost={service_host}")
+            query_params.append(f"serviceHost={urllib.parse.quote(service_host)}")
 
         # ⑤ Full base64 body blob — long, goes last so truncation doesn't hurt short params
         if parsed_body_data:
