@@ -46,13 +46,15 @@ from pipecat.transports.websocket.fastapi import (
 from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
 import transcriber
 import supabase_storage
+from bcrec_counselor_prompt import BCREC_COUNSELOR_PROMPT
+from bcrec_course_rag import search_bcrec_course_details
 
 load_dotenv(override=True)
 
 DEFAULT_VOICE = "Leda"
 FIRST_TURN_INSTRUCTION = (
     "Greet the user naturally and briefly in Bengali. "
-    "Something like: 'Hello, ami Sukanya Classes theke Sudipta bolchhi. Kemon achen?' "
+    "Something like: 'Namaskar, ami Sudipta bolchhi BCREC Durgapur theke. Apni ki ek minute kotha bolte parben?' "
     "Then wait for their response."
 )
 
@@ -62,19 +64,19 @@ FIRST_TURN_INSTRUCTION = (
 # ## 1. Identity & Vibe
 # * **Who you are:** Sudipta, a friendly, 20-something female educational counselor. You are calling from **Sukanya Classes**, a local coaching institute in Durgapur/Raniganj.
 # * **Personality:** Warm, energetic, neighborly, and empathetic. You are a consultant, not a salesperson.
-# * **Speech Style:** Conversational Bengali-English mix (Bonglish). Use words like "actually", "naturally", "mane...", "dekheun...". 
+# * **Speech Style:** Conversational Bengali-English mix (Bonglish). Use words like "actually", "naturally", "mane...", "dekheun...".
 # * **Respect:** Address parents as "Dada," "Boudi," or "Apni." But don't mix Bengali and Hindi.
 # * **Language Mirroring:** Seamlessly switch to Hindi or English if the user does, maintaining an Indian accent.
 
 # ## 2. Your Mission (The "Why")
-# Your goal is to have a genuine conversation with parents about their children's education (Class 1-12, CBSE/ICSE). 
+# Your goal is to have a genuine conversation with parents about their children's education (Class 1-12, CBSE/ICSE).
 # * **Inform:** Let them know about Sukanya Classes' unique approach (max 10 students, practical labs, audio-visual tools).
 # * **Connect:** If they have a child at home who is studying in class 1 to 12(DON'T ASSUME), Understand their concerns (homework pressure, fear of subjects).
 # * **Invite:** If they seem interested, offer to send details via WhatsApp and invite them to visit a branch.
 
 # ## 3. Conversational Guidelines (Natural Flow)
 # * **Be Organic:** Do NOT follow a rigid script. Listen to the user and respond to what they actually say.
-# * **Keep it Snappy:** Speak in short, natural bursts. One or two sentences at a time. 
+# * **Keep it Snappy:** Speak in short, natural bursts. One or two sentences at a time.
 # * **One Question Rule:** Never overwhelm. Ask only one question at a time and wait for the answer.
 # * **Active Listening:** Use verbal nods like "Ekdom thik," "Haa," "Sotti," or "Acha." If they mention a problem, validate it before offering a solution.
 # * **No Information Dumping:** Don't list features like a brochure. Mention a detail only when it fits the conversation.
@@ -111,7 +113,10 @@ FIRST_TURN_INSTRUCTION = (
 # * **No Corporate Talk:** Avoid "comprehensive," "pedagogy," or "synergy." Use "shob bhabe help kora" or "valovabe sekhano."
 # """
 
-DEFAULT_AGENT_PROMPT='''
+DEFAULT_AGENT_PROMPT = BCREC_COUNSELOR_PROMPT
+
+
+SUKANYA_AGENT_PROMPT = """
 
 # Sudipta — Sukanya Classes, Outbound Call Agent
 
@@ -272,16 +277,19 @@ If it sounds like something you'd say to your neighbor's mom, you're close.
 # * **Ending the Call:** When the conversation is naturally over or the user wants to hang up, say a warm goodbye (e.g., "Theek ache dada, bhalo thakben, bye!") and THEN call `end_call`.
 
 
-'''
+"""
 
 
-async def run_bot(transport: BaseTransport, handle_sigint: bool, phone_number: str = None, call_id: str = None, vobiz_call_id: str = None, serializer: VobizFrameSerializer = None):
+async def run_bot(
+    transport: BaseTransport,
+    handle_sigint: bool,
+    phone_number: str = None,
+    call_id: str = None,
+    vobiz_call_id: str = None,
+    serializer: VobizFrameSerializer = None,
+):
     bg_tasks = set()
-    state = {
-        "whatsapp_sent_at": 0,
-        "terminating": False,
-        "pending_termination": False
-    }
+    state = {"whatsapp_sent_at": 0, "terminating": False, "pending_termination": False}
     call_state = {
         "connected_at": None,
         "transcript": [],
@@ -292,34 +300,50 @@ async def run_bot(transport: BaseTransport, handle_sigint: bool, phone_number: s
     # Records inside the Pipecat pipeline at full 16kHz quality.
     # Stereo: user audio on the left channel, bot TTS on the right channel.
     audiobuffer = AudioBufferProcessor(
-        num_channels=2,         # stereo: user=L, bot=R
-        enable_turn_audio=True, # also emit per-turn clips via on_*_turn_audio_data
+        num_channels=2,  # stereo: user=L, bot=R
+        enable_turn_audio=True,  # also emit per-turn clips via on_*_turn_audio_data
     )
     # ────────────────────────────────────────────────────────────────────────
 
-    tools_def = [{
-        "function_declarations": [
-            {
-                "name": "send_whatsapp_message",
-                "description": "Sends any requested details (addresses, timings, etc.) via WhatsApp. Use its 'custom_message' field to write the response in natural language.",
-                "parameters": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "custom_message": {
-                            "type": "STRING",
-                            "description": "The natural language message content based on user's request."
-                        }
+    tools_def = [
+        {
+            "function_declarations": [
+                {
+                    "name": "send_whatsapp_message",
+                    "description": "Sends any requested details (addresses, timings, admission links, course summaries, etc.) via WhatsApp. Use its 'custom_message' field to write the response in natural language.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "custom_message": {
+                                "type": "STRING",
+                                "description": "The natural language message content based on user's request.",
+                            }
+                        },
+                        "required": ["custom_message"],
                     },
-                    "required": ["custom_message"]
-                }
-            },
-            {
-                "name": "end_call",
-                "description": "IMMEDIATELY terminates the call and hangs up. Use when user says 'Rakho', 'Rakhchi', 'Goodbye', 'Bye', or finishes conversation.",
-                "parameters": {"type": "OBJECT", "properties": {}}
-            }
-        ]
-    }]
+                },
+                {
+                    "name": "search_bcrec_course_details",
+                    "description": "Searches detailed BCREC B.Tech course context using hybrid retrieval and reranking. Use for detailed stream/course questions about labs, careers, intake, accreditation, placements, research, HOD, facilities, or comparisons.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "query": {
+                                "type": "STRING",
+                                "description": "Focused query containing the stream/course and detail needed, e.g. 'CSE AI ML labs and career pathways' or 'Electrical Engineering NBA intake placements'.",
+                            }
+                        },
+                        "required": ["query"],
+                    },
+                },
+                {
+                    "name": "end_call",
+                    "description": "IMMEDIATELY terminates the call and hangs up. Use when user says 'Rakho', 'Rakhchi', 'Goodbye', 'Bye', or finishes conversation.",
+                    "parameters": {"type": "OBJECT", "properties": {}},
+                },
+            ]
+        }
+    ]
 
     # Gemini Multimodal Live Service correctly configured
     llm = GeminiLiveLLMService(
@@ -328,21 +352,22 @@ async def run_bot(transport: BaseTransport, handle_sigint: bool, phone_number: s
         settings=GeminiLiveLLMService.Settings(
             model="models/gemini-3.1-flash-live-preview",
             voice=DEFAULT_VOICE,
-            system_instruction=DEFAULT_AGENT_PROMPT
-        )
+            system_instruction=DEFAULT_AGENT_PROMPT,
+        ),
     )
 
     async def _do_send_whatsapp(ph_num, text_content):
         url = "https://wasenderapi.com/api/send-message"
         headers = {
             "Authorization": "Bearer a2446e2df73638ef91898f7a9f8a8e19da8b76f2a31517df6e0f4a7cfd8dd14a",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         }
         # Ensure phone number is in correct format (remove '+' if present)
         clean_ph_num = ph_num.replace("+", "")
         data = {"to": clean_ph_num, "text": text_content}
         try:
             import aiohttp
+
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, headers=headers, json=data) as resp:
                     if resp.status == 200:
@@ -356,47 +381,47 @@ async def run_bot(transport: BaseTransport, handle_sigint: bool, phone_number: s
     async def send_whatsapp_message(params: FunctionCallParams):
         # 1. Select the content robustly
         args = params.arguments if hasattr(params, "arguments") else {}
-        custom_message = args.get("custom_message", "Amader institute somporke daitails pathiye dilam.")
+        custom_message = args.get(
+            "custom_message", "Amader institute somporke daitails pathiye dilam."
+        )
 
         logger.info(f"📤 WHATSAPP TRIGGERED: {custom_message}")
-        
+
         if not phone_number:
             logger.error("No phone number available.")
             await params.result_callback({"error": "No phone number available."})
             return
-        
+
         standard_info = """
-SUKANYA CLASSES | Class 1–12 (CBSE/ICSE)
-🌟 We teach the way students learn🌟 
+Dr. B. C. Roy Engineering College, Durgapur (BCREC)
+B.Tech Courses: Civil, CSD, CSE, CSE (AI & ML), CSE (Data Science), CSE (Cyber Security), Electrical, ECE, IT, Mechanical
 
-✅ Experienced Faculty
-✅ Practical & Computer Labs
-✅ CCTV & Transport
-
-📍 Centres: Fuljhore, Benachity, Raniganj
-🎓 Admission Open | Session 2026–27
-📞 8637583173 / 9002005510 / 9002005526
-YT: https://youtube.com/shorts/j5FAoTYgacI?feature=shared
-FB: https://www.facebook.com/sukanyaclasses
-IG: https://www.instagram.com/sukanyaclasses
-🌐 sukanyaclasses.com
+Official Website: https://www.bcrec.ac.in
+B.Tech Courses: https://www.bcrec.ac.in/btech-courses/kolkata-westbengal
+Admission Enquiry: https://www.bcrec.ac.in/inquery
+Admission Process: https://www.bcrec.ac.in/custom-page/62a71b1551f19
+Phone: (0343)-2501353, 2504106
+Mobile: +91-6297128554
+Email: info@bcrec.ac.in
 """
         full_text = f"{custom_message}\n\n{standard_info}".strip()
-        
+
         # Deduplication: Ignore if sent in the last 60 seconds
         now = time.time()
         if now - state["whatsapp_sent_at"] < 60:
             logger.info("🚫 WHATSAPP SKIPPED (Duplicate/Too Frequent)")
             await params.result_callback({"status": "already_sent_recently"})
             return
-        
+
         state["whatsapp_sent_at"] = now
 
         # Non-blocking background task
         asyncio.create_task(_do_send_whatsapp(phone_number, full_text))
 
         # Return success to LLM via callback
-        await params.result_callback({"status": "success", "message": "WhatsApp message sent successfully."})
+        await params.result_callback(
+            {"status": "success", "message": "WhatsApp message sent successfully."}
+        )
 
         # KEY FIX: Queue an LLMRunFrame to "wake up" the LLM and make it acknowledge verbally
         await task.queue_frame(LLMRunFrame())
@@ -407,10 +432,15 @@ IG: https://www.instagram.com/sukanyaclasses
         auth_token = os.getenv("VOBIZ_AUTH_TOKEN")
         if not auth_id or not auth_token:
             return
-        
+
         # Use vobiz_call_id if provided (real Vobiz UUID), otherwise fallback to call_id
         target_id = vobiz_call_id or call_id
-        if not target_id and serializer and hasattr(serializer, "call_id") and serializer.call_id:
+        if (
+            not target_id
+            and serializer
+            and hasattr(serializer, "call_id")
+            and serializer.call_id
+        ):
             target_id = serializer.call_id
 
         if not target_id:
@@ -422,33 +452,40 @@ IG: https://www.instagram.com/sukanyaclasses
         headers = {
             "X-Auth-ID": auth_id,
             "X-Auth-Token": auth_token,
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         }
         try:
             import aiohttp
+
             async with aiohttp.ClientSession() as session:
                 async with session.delete(url, headers=headers) as resp:
                     res_body = await resp.text()
-                    logger.info(f"Vobiz REST hangup status: {resp.status}, Body: {res_body}")
+                    logger.info(
+                        f"Vobiz REST hangup status: {resp.status}, Body: {res_body}"
+                    )
         except Exception as e:
             logger.error(f"Vobiz REST hangup failed: {e}")
 
     async def end_call(params: FunctionCallParams):
         if state["terminating"] or state["pending_termination"]:
-            logger.info("[END CALL] Termination already in progress, ignoring duplicate call.")
+            logger.info(
+                "[END CALL] Termination already in progress, ignoring duplicate call."
+            )
             await params.result_callback({"status": "already_terminating"})
             return
 
         logger.info("🛑 END CALL TOOL TRIGGERED - WAITING FOR FAREWELL TO FINISH")
         state["pending_termination"] = True
         await params.result_callback({"status": "pending_farewell_completion"})
-        
-        # SAFETY FALLBACK: If for some reason the turn-stop event doesn't fire, 
+
+        # SAFETY FALLBACK: If for some reason the turn-stop event doesn't fire,
         # force a hangup after 15 seconds so the line isn't stuck.
         async def _safety_termination_fallback():
             await asyncio.sleep(15)
             if not state["terminating"]:
-                logger.warning("[END CALL] Safety fallback triggered: forcing hangup now.")
+                logger.warning(
+                    "[END CALL] Safety fallback triggered: forcing hangup now."
+                )
                 state["terminating"] = True
                 await _vobiz_rest_hangup()
                 await params.llm.push_frame(EndTaskFrame(), FrameDirection.UPSTREAM)
@@ -456,6 +493,17 @@ IG: https://www.instagram.com/sukanyaclasses
         asyncio.create_task(_safety_termination_fallback())
 
     llm.register_function("send_whatsapp_message", send_whatsapp_message)
+
+    async def search_bcrec_course_details_tool(params: FunctionCallParams):
+        args = params.arguments if hasattr(params, "arguments") else {}
+        query = args.get("query", "")
+        logger.info(f"[BCREC RAG] Search query: {query}")
+        result = search_bcrec_course_details(query=query, top_k=5)
+        await params.result_callback({"status": "success", "context": result})
+
+    llm.register_function(
+        "search_bcrec_course_details", search_bcrec_course_details_tool
+    )
     llm.register_function("end_call", end_call)
 
     # ── Recording event handlers ─────────────────────────────────────────────
@@ -468,23 +516,28 @@ IG: https://www.instagram.com/sukanyaclasses
         fname = f"recordings/call_{label}_stereo.wav"
         with wave.open(fname, "wb") as wf:
             wf.setnchannels(num_channels)  # 2
-            wf.setsampwidth(2)             # 16-bit PCM
-            wf.setframerate(sample_rate)   # 16000 Hz (Gemini Live)
+            wf.setsampwidth(2)  # 16-bit PCM
+            wf.setframerate(sample_rate)  # 16000 Hz (Gemini Live)
             wf.writeframes(audio)
-        logger.info(f"[RECORDING] ✅ Stereo WAV saved → {fname} "
-                    f"({num_channels}ch, {sample_rate}Hz, {len(audio)//2//num_channels//sample_rate:.1f}s)")
+        logger.info(
+            f"[RECORDING] ✅ Stereo WAV saved → {fname} "
+            f"({num_channels}ch, {sample_rate}Hz, {len(audio) // 2 // num_channels // sample_rate:.1f}s)"
+        )
         call_state["recording_files"]["stereo"] = f"call_{label}_stereo.wav"
-        
+
         # Upload to Supabase Storage
         if call_id:
             supabase_path = supabase_storage.upload_recording(fname, call_id)
             if supabase_path:
                 call_state["recording_files"]["stereo_remote"] = supabase_path
                 from call_store import update_call
+
                 update_call(call_id, recording_files=call_state["recording_files"])
 
     @audiobuffer.event_handler("on_track_audio_data")
-    async def on_track_audio_data(buffer, user_audio, bot_audio, sample_rate, num_channels):
+    async def on_track_audio_data(
+        buffer, user_audio, bot_audio, sample_rate, num_channels
+    ):
         """Saves separate user/bot mono WAVs. Triggers transcription AFTER files are on disk."""
         os.makedirs("recordings", exist_ok=True)
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -492,22 +545,25 @@ IG: https://www.instagram.com/sukanyaclasses
         for track_name, track_audio in (("user", user_audio), ("bot", bot_audio)):
             fname = f"recordings/call_{label}_{track_name}.wav"
             with wave.open(fname, "wb") as wf:
-                wf.setnchannels(1)              # mono per track
-                wf.setsampwidth(2)              # 16-bit PCM
-                wf.setframerate(sample_rate)    # 16000 Hz
+                wf.setnchannels(1)  # mono per track
+                wf.setsampwidth(2)  # 16-bit PCM
+                wf.setframerate(sample_rate)  # 16000 Hz
                 wf.writeframes(track_audio)
             logger.info(f"[RECORDING] ✅ {track_name.upper()} mono WAV saved → {fname}")
             call_state["recording_files"][track_name] = f"call_{label}_{track_name}.wav"
-            
+
             # Upload to Supabase Storage
             if call_id:
                 supabase_path = supabase_storage.upload_recording(fname, call_id)
                 if supabase_path:
-                    call_state["recording_files"][f"{track_name}_remote"] = supabase_path
+                    call_state["recording_files"][f"{track_name}_remote"] = (
+                        supabase_path
+                    )
 
         # Notify CallManager of all recording files
         try:
             from call_manager import get_call_manager
+
             cm = get_call_manager()
             if call_id:
                 cm.on_recording_saved(call_id, call_state["recording_files"])
@@ -519,15 +575,16 @@ IG: https://www.instagram.com/sukanyaclasses
         # on_client_disconnected called stop_recording() which fires these events;
         # triggering transcription there would race against the file writes.
         if call_id:
-            logger.info(f"[RECORDING] 🎤 Triggering post-call transcription for {call_id}")
+            logger.info(
+                f"[RECORDING] 🎤 Triggering post-call transcription for {call_id}"
+            )
             asyncio.create_task(transcriber.transcribe_and_store(call_id))
+
     # ────────────────────────────────────────────────────────────────────────
 
     # PROPER INITIALIZATION (Matching Sample)
     context = LLMContext(
-        messages=[
-            {"role": "system", "content": FIRST_TURN_INSTRUCTION}
-        ]
+        messages=[{"role": "system", "content": FIRST_TURN_INSTRUCTION}]
     )
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
@@ -559,16 +616,19 @@ IG: https://www.instagram.com/sukanyaclasses
     )
 
     # Standard Pipecat events (checking LLMService base class behavior)
-    # We'll skip custom handlers here as they produced warnings, 
+    # We'll skip custom handlers here as they produced warnings,
     # and instead rely on pipeline metrics and logs from the service itself.
 
     async def on_client_connected(transport, client):
-        logger.info(f"Starting outbound call conversation (Gemini Live). Client: {client}")
+        logger.info(
+            f"Starting outbound call conversation (Gemini Live). Client: {client}"
+        )
         call_state["connected_at"] = time.time()
 
         # Notify CallManager
         try:
             from call_manager import get_call_manager
+
             cm = get_call_manager()
             if call_id:
                 cm.on_call_connected(call_id)
@@ -578,35 +638,39 @@ IG: https://www.instagram.com/sukanyaclasses
         # Start native Pipecat recording
         await audiobuffer.start_recording()
         logger.info("[RECORDING] 🎙️ Native recording started")
-        
+
         # ── Kick off conversation with LLMRunFrame ──
         await task.queue_frame(LLMRunFrame())
         logger.info("[ON_CONNECT] Queued LLMRunFrame to start greeting")
 
     @assistant_aggregator.event_handler("on_assistant_turn_stopped")
-    async def on_assistant_turn_stopped(aggregator, message: AssistantTurnStoppedMessage):
+    async def on_assistant_turn_stopped(
+        aggregator, message: AssistantTurnStoppedMessage
+    ):
         if state["pending_termination"] and not state["terminating"]:
-            logger.info("[END CALL] Bot finished speaking - initiating final disconnect sequence")
+            logger.info(
+                "[END CALL] Bot finished speaking - initiating final disconnect sequence"
+            )
             state["terminating"] = True
-            
+
             # Brief natural pause (1 second) after the bot finishes its last word
             await asyncio.sleep(1)
-            
+
             # 1. REST API hangup (telephony cut)
             await _vobiz_rest_hangup()
-            
+
             # 2. Pipeline EndTaskFrame (task cleanup)
             await task.queue_frame(EndTaskFrame())
 
     # Register transport-level handlers
     transport.add_event_handler("on_client_connected", on_client_connected)
-    
+
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
         logger.info("Outbound call ended")
         # Align with sample code: hard cancel the task on disconnect to ensure cleanup
         await task.cancel()
-        
+
         # Stop recording — flushes buffered audio and fires on_audio_data / on_track_audio_data
         await audiobuffer.stop_recording()
         logger.info("[RECORDING] 🎙️ Native recording stopped")
@@ -617,10 +681,13 @@ IG: https://www.instagram.com/sukanyaclasses
             duration = time.time() - call_state["connected_at"]
         try:
             from call_manager import get_call_manager
+
             cm = get_call_manager()
             if call_id:
                 cm.on_transcript_update(call_id, call_state["transcript"])
-                cm.on_call_ended(call_id, duration_seconds=duration, end_reason="hangup")
+                cm.on_call_ended(
+                    call_id, duration_seconds=duration, end_reason="hangup"
+                )
                 # NOTE: Transcription is triggered from on_track_audio_data (after WAV files
                 # are confirmed written to disk) — NOT here, to avoid a race condition.
         except Exception as e:
@@ -632,37 +699,49 @@ IG: https://www.instagram.com/sukanyaclasses
     await runner.run(task)
 
 
-async def bot(runner_args: RunnerArguments, call_id: str = None, vobiz_call_id: str = None, stream_id: str = None, body_data: dict = None):
+async def bot(
+    runner_args: RunnerArguments,
+    call_id: str = None,
+    vobiz_call_id: str = None,
+    stream_id: str = None,
+    body_data: dict = None,
+):
     """Main bot entry point compatible with Pipecat Cloud."""
-    
+
     phone_number = body_data.get("phone_number") if body_data else None
 
     if not call_id:
-        transport_type, call_data = await parse_telephony_websocket(runner_args.websocket)
+        transport_type, call_data = await parse_telephony_websocket(
+            runner_args.websocket
+        )
         logger.info(f"Transport type: {transport_type}, Call data: {call_data}")
         stream_id = call_data.get("stream_id", "")
         # Standardize: check cm_id (query param) then call_id (body) then call_uuid
-        call_id = call_data.get("cm_id") or call_data.get("call_id") or call_data.get("call_uuid", "")
+        call_id = (
+            call_data.get("cm_id")
+            or call_data.get("call_id")
+            or call_data.get("call_uuid", "")
+        )
         vobiz_call_id = call_data.get("call_uuid") or call_id
     elif not stream_id:
         logger.info(f"Using call_id as stream_id - Call ID: {call_id}")
         stream_id = call_id
-    
+
     if not vobiz_call_id:
         vobiz_call_id = call_id
 
     # The serializer should ideally use the Vobiz UUID for its internal hangup logic
     serializer = VobizFrameSerializer(
         stream_id=stream_id,
-        call_id=vobiz_call_id, 
+        call_id=vobiz_call_id,
         auth_id=os.getenv("VOBIZ_AUTH_ID", ""),
         auth_token=os.getenv("VOBIZ_AUTH_TOKEN", ""),
         params=VobizFrameSerializer.InputParams(
             vobiz_sample_rate=8000,
             encoding="audio/x-mulaw",
             sample_rate=None,
-            auto_hang_up=True
-        )
+            auto_hang_up=True,
+        ),
     )
 
     transport = FastAPIWebsocketTransport(
@@ -672,9 +751,18 @@ async def bot(runner_args: RunnerArguments, call_id: str = None, vobiz_call_id: 
             audio_out_enabled=True,
             add_wav_header=False,
             serializer=serializer,
-            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.3, min_silence_duration_ms=100)),
+            vad_analyzer=SileroVADAnalyzer(
+                params=VADParams(stop_secs=0.3, min_silence_duration_ms=100)
+            ),
         ),
     )
 
     handle_sigint = runner_args.handle_sigint
-    await run_bot(transport, handle_sigint, phone_number, call_id=call_id, vobiz_call_id=vobiz_call_id, serializer=serializer)
+    await run_bot(
+        transport,
+        handle_sigint,
+        phone_number,
+        call_id=call_id,
+        vobiz_call_id=vobiz_call_id,
+        serializer=serializer,
+    )
