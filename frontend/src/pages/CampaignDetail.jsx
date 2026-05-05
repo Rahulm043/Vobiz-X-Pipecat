@@ -20,6 +20,10 @@ function formatDuration(seconds) {
     return m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
+function getAgentLabel(record) {
+    return record?.metadata?.agent_name || record?.agent_name || record?.metadata?.agent_id || record?.agent_id || 'default';
+}
+
 export default function CampaignDetail() {
     const { id } = useParams();
     const navigate = useNavigate();
@@ -65,6 +69,7 @@ export default function CampaignDetail() {
                     <p className="flex-center gap-1">
                         <span className={`badge ${campaign.status}`}>{campaign.status}</span>
                         <span className="badge" style={{ background: 'rgba(255,255,255,0.04)' }}>{campaign.mode}</span>
+                        <span className="badge agent">{getAgentLabel(campaign.recipients?.[0] || campaign)}</span>
                         <span className="text-dim text-sm">• Created {formatDate(campaign.created_at)}</span>
                     </p>
                 </div>
@@ -121,6 +126,7 @@ export default function CampaignDetail() {
                                 <th>#</th>
                                 <th>Phone</th>
                                 <th>Name</th>
+                                <th>Agent</th>
                                 <th>Status</th>
                                 <th>Duration</th>
                                 <th>End Reason</th>
@@ -134,6 +140,7 @@ export default function CampaignDetail() {
                                     <td className="desktop-cell text-dim">{i + 1}</td>
                                     <td className="desktop-cell mono">{call.phone_number}</td>
                                     <td className="desktop-cell">{call.recipient_name || '—'}</td>
+                                    <td className="desktop-cell"><span className="badge agent">{getAgentLabel(call)}</span></td>
                                     <td className="desktop-cell"><span className={`badge ${call.status}`}>{call.status}</span></td>
                                     <td className="desktop-cell">{formatDuration(call.duration_seconds)}</td>
                                     <td className="desktop-cell text-dim text-sm">{call.end_reason || '—'}</td>
@@ -150,6 +157,8 @@ export default function CampaignDetail() {
                                         <div className="flex" style={{ gap: '0.3rem', fontSize: '0.7rem', color: 'var(--text-dim)', alignItems: 'center', flexWrap: 'wrap' }}>
                                             <span>{formatDuration(call.duration_seconds)}</span>
                                             {call.end_reason && <><span>•</span><span>{call.end_reason}</span></>}
+                                            <span>•</span>
+                                            <span>{getAgentLabel(call)}</span>
                                             <span>•</span>
                                             <span>{formatDate(call.created_at)}</span>
                                         </div>

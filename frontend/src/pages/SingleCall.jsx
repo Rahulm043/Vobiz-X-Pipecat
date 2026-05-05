@@ -1,4 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import useSWR from 'swr';
 import { PipecatClient, RTVIEvent } from '@pipecat-ai/client-js';
 import { WebSocketTransport, ProtobufFrameSerializer } from '@pipecat-ai/websocket-transport';
 import { PipecatClientProvider, PipecatClientAudio, usePipecatClient, useRTVIClientEvent } from '@pipecat-ai/client-react';
@@ -6,7 +7,36 @@ import {
     Phone, PhoneOff, PhoneCall, Mic, MicOff, Loader2,
     MessageSquare, Radio, AlertCircle,
 } from 'lucide-react';
-import { authFetch } from '../utils/api.js';
+import { authFetch, swrFetcher } from '../utils/api.js';
+
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:7860';
+
+function createPipecatClient(agentId) {
+    const params = new URLSearchParams({ agent_id: agentId });
+    const wsUrl = `${API_BASE.replace('http', 'ws')}/web-ws?${params.toString()}`;
+    const transport = new WebSocketTransport({ wsUrl, serializer: new ProtobufFrameSerializer(), playerSampleRate: 16000, recorderSampleRate: 16000 });
+    Object.defineProperty(transport, 'isCamEnabled', { get: () => false });
+    Object.defineProperty(transport, 'isSharingScreen', { get: () => false });
+    return new PipecatClient({ transport, enableMic: true });
+}
+
+function AgentSelector({ agents, selectedAgentId, onChange }) {
+    return (
+        <div className="card agent-picker-card">
+            <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Demo Agent</label>
+                <select value={selectedAgentId} onChange={(e) => onChange(e.target.value)}>
+                    {agents.map((agent) => (
+                        <option key={agent.id} value={agent.id}>{agent.name}</option>
+                    ))}
+                </select>
+            </div>
+            <p className="text-sm text-dim" style={{ marginTop: '0.75rem' }}>
+                {agents.find((agent) => agent.id === selectedAgentId)?.description || 'Choose which agent handles this call.'}
+            </p>
+        </div>
+    );
+}
 
 function WebCallUI() {
     const client = usePipecatClient();
@@ -92,19 +122,22 @@ function WebCallUI() {
     );
 }
 
-// Create client outside component
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:7860';
-const wsUrl = API_BASE.replace('http', 'ws') + '/web-ws';
-const transport = new WebSocketTransport({ wsUrl, serializer: new ProtobufFrameSerializer(), playerSampleRate: 16000, recorderSampleRate: 16000 });
-Object.defineProperty(transport, 'isCamEnabled', { get: () => false });
-Object.defineProperty(transport, 'isSharingScreen', { get: () => false });
-const pipecatClient = new PipecatClient({ transport, enableMic: true });
-
 export default function SingleCall() {
     const [phoneNumber, setPhoneNumber] = useState('');
     const [isDialing, setIsDialing] = useState(false);
     const [dialResult, setDialResult] = useState(null);
     const [mode, setMode] = useState('sip'); // 'sip' or 'web'
+    const { data: agentsData = { agents: [], default_agent_id: 'bcrec' } } = useSWR('/api/agents', swrFetcher);
+    const agents = agentsData.agents?.length ? agentsData.agents : [{ id: 'bcrec', name: 'BCREC Admissions', description: 'Default demo agent.' }];
+    const [selectedAgentId, setSelectedAgentId] = useState('bcrec');
+    const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) || agents[0];
+    const pipecatClient = useMemo(() => createPipecatClient(selectedAgent.id), [selectedAgent.id]);
+
+    useEffect(() => {
+        if (agents.length > 0 && !agents.some((agent) => agent.id === selectedAgentId)) {
+            setSelectedAgentId(agentsData.default_agent_id || agents[0].id);
+        }
+    }, [agents, agentsData.default_agent_id, selectedAgentId]);
 
     const handleSipCall = async () => {
         if (!phoneNumber.trim()) return;
@@ -114,7 +147,10 @@ export default function SingleCall() {
             const res = await authFetch(`/api/calls/single`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ phone_number: phoneNumber.startsWith('+') ? phoneNumber : `+91${phoneNumber}` }),
+                body: JSON.stringify({
+                    phone_number: phoneNumber.startsWith('+') ? phoneNumber : `+91${phoneNumber}`,
+                    agent_id: selectedAgentId,
+                }),
             });
             const data = await res.json();
             if (res.ok) {
@@ -136,7 +172,9 @@ export default function SingleCall() {
             </div>
 
             <div style={{ maxWidth: '600px', margin: '0 auto' }}>
-                <div className="inspector-tabs" style={{ maxWidth: 300, marginBottom: '1.5rem' }}>
+                <AgentSelector agents={agents} selectedAgentId={selectedAgent.id} onChange={setSelectedAgentId} />
+
+                <div className="inspector-tabs" style={{ maxWidth: 300, marginBottom: '1.5rem', marginTop: '1.5rem' }}>
                     <button className={`inspector-tab ${mode === 'sip' ? 'active' : ''}`} onClick={() => setMode('sip')}>
                         <PhoneCall size={14} style={{ marginRight: 4 }} /> SIP Call
                     </button>

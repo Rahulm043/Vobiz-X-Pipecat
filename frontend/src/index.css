@@ -580,6 +580,11 @@ tbody td {
   color: #22d3ee;
 }
 
+.badge.agent {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary);
+}
+
 /* =================== BUTTONS =================== */
 
 button,

@@ -29,6 +29,7 @@ from pipecat.runner.types import RunnerArguments
 from pipecat.runner.utils import parse_telephony_websocket
 from pipecat.serializers.vobiz import VobizFrameSerializer
 from pipecat.services.openai.llm import OpenAILLMService
+
 # from pipecat.services.deepgram.stt import DeepgramSTTService
 # from pipecat.services.deepgram.tts import DeepgramTTSService
 from pipecat.services.google.llm import GoogleLLMService
@@ -43,28 +44,36 @@ from pipecat.transports.websocket.fastapi import (
 load_dotenv(override=True)
 import time
 import supabase_storage
+from agents import get_agent_config
 
 # Initialize Smart Turn Analyzer once at startup to avoid per-call loading latency (15-20s)
 try:
-    from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
+    from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import (
+        LocalSmartTurnAnalyzerV3,
+    )
+
     smart_turn_analyzer = LocalSmartTurnAnalyzerV3()
 except ImportError:
     smart_turn_analyzer = None
 
 
-async def run_bot(transport: BaseTransport, handle_sigint: bool, phone_number: str = None, call_id: str = None):
+async def run_bot(
+    transport: BaseTransport,
+    handle_sigint: bool,
+    phone_number: str = None,
+    call_id: str = None,
+    agent_id: str = None,
+):
+    agent_config = get_agent_config(agent_id)
     # ── NativeRecording ─────────────────────────────────────────────────────
     # Records inside the Pipecat pipeline at full 24kHz quality.
     # Stereo: user audio on the left channel, bot TTS on the right channel.
     audiobuffer = AudioBufferProcessor(
-        num_channels=2,         # stereo: user=L, bot=R
-        enable_turn_audio=True, # also emit per-turn clips via on_*_turn_audio_data
+        num_channels=2,  # stereo: user=L, bot=R
+        enable_turn_audio=True,  # also emit per-turn clips via on_*_turn_audio_data
     )
     # ────────────────────────────────────────────────────────────────────────
-    llm = OpenAILLMService(
-        api_key=os.getenv("OPENAI_API_KEY"),
-        model="gpt-4o-mini"
-    )
+    llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"), model="gpt-4o-mini")
 
     stt = SarvamSTTService(
         api_key=os.getenv("SARVAM_API_KEY"),
@@ -81,9 +90,8 @@ async def run_bot(transport: BaseTransport, handle_sigint: bool, phone_number: s
         {
             "role": "system",
             "content": (
-                "You are a helpful assistant. "
-                "Keep your responses very brief and conversational, as they will be spoken. "
-                "Start with a friendly one-sentence greeting when you first connect."
+                f"{agent_config.system_prompt}\n\n"
+                "Keep your responses very brief and conversational, as they will be spoken."
             ),
         },
     ]
@@ -94,23 +102,21 @@ async def run_bot(transport: BaseTransport, handle_sigint: bool, phone_number: s
         user_params=LLMUserAggregatorParams(
             user_turn_strategies=UserTurnStrategies(
                 stop=[
-                    TurnAnalyzerUserTurnStopStrategy(
-                        turn_analyzer=smart_turn_analyzer
-                    )
+                    TurnAnalyzerUserTurnStopStrategy(turn_analyzer=smart_turn_analyzer)
                 ]
             )
-        )
+        ),
     )
 
     pipeline = Pipeline(
         [
-            transport.input(),           # Websocket input from client
-            stt,                         # Speech-To-Text
+            transport.input(),  # Websocket input from client
+            stt,  # Speech-To-Text
             context_aggregator.user(),
-            llm,                         # LLM
-            tts,                         # Text-To-Speech
-            transport.output(),          # Websocket output to client
-            audiobuffer,                 # ← Native recording (after output so both tracks captured)
+            llm,  # LLM
+            tts,  # Text-To-Speech
+            transport.output(),  # Websocket output to client
+            audiobuffer,  # ← Native recording (after output so both tracks captured)
             context_aggregator.assistant(),
         ]
     )
@@ -165,19 +171,23 @@ async def run_bot(transport: BaseTransport, handle_sigint: bool, phone_number: s
         fname = f"recordings/call_{label}_stereo.wav"
         with wave.open(fname, "wb") as wf:
             wf.setnchannels(num_channels)  # 2
-            wf.setsampwidth(2)             # 16-bit PCM
-            wf.setframerate(sample_rate)   # 24000 Hz
+            wf.setsampwidth(2)  # 16-bit PCM
+            wf.setframerate(sample_rate)  # 24000 Hz
             wf.writeframes(audio)
-        logger.info(f"[RECORDING] ✅ Stereo WAV saved → {fname} "
-                    f"({num_channels}ch, {sample_rate}Hz, {len(audio)//2//num_channels//sample_rate:.1f}s)")
-        
+        logger.info(
+            f"[RECORDING] ✅ Stereo WAV saved → {fname} "
+            f"({num_channels}ch, {sample_rate}Hz, {len(audio) // 2 // num_channels // sample_rate:.1f}s)"
+        )
+
         # Upload to Supabase Storage
         if call_id:
             supabase_path = supabase_storage.upload_recording(fname, call_id)
             if supabase_path:
                 from call_store import update_call
+
                 # Fetch existing record to get dict of recording_files
                 import call_store
+
                 existing = call_store.get_call(call_id)
                 files = existing.get("recording_files", {}) if existing else {}
                 files["stereo"] = f"call_{label}_stereo.wav"
@@ -185,7 +195,9 @@ async def run_bot(transport: BaseTransport, handle_sigint: bool, phone_number: s
                 update_call(call_id, recording_files=files)
 
     @audiobuffer.event_handler("on_track_audio_data")
-    async def on_track_audio_data(buffer, user_audio, bot_audio, sample_rate, num_channels):
+    async def on_track_audio_data(
+        buffer, user_audio, bot_audio, sample_rate, num_channels
+    ):
         """Also saves separate user/bot mono WAVs alongside the stereo file."""
         os.makedirs("recordings", exist_ok=True)
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -193,22 +205,24 @@ async def run_bot(transport: BaseTransport, handle_sigint: bool, phone_number: s
         for track_name, track_audio in (("user", user_audio), ("bot", bot_audio)):
             fname = f"recordings/call_{label}_{track_name}.wav"
             with wave.open(fname, "wb") as wf:
-                wf.setnchannels(1)              # mono per track
-                wf.setsampwidth(2)              # 16-bit PCM
-                wf.setframerate(sample_rate)    # 24000 Hz
+                wf.setnchannels(1)  # mono per track
+                wf.setsampwidth(2)  # 16-bit PCM
+                wf.setframerate(sample_rate)  # 24000 Hz
                 wf.writeframes(track_audio)
             logger.info(f"[RECORDING] ✅ {track_name.upper()} mono WAV saved → {fname}")
-            
+
             # Upload to Supabase Storage
             if call_id:
                 supabase_path = supabase_storage.upload_recording(fname, call_id)
                 if supabase_path:
                     import call_store
+
                     existing = call_store.get_call(call_id)
                     files = existing.get("recording_files", {}) if existing else {}
                     files[track_name] = f"call_{label}_{track_name}.wav"
                     files[f"{track_name}_remote"] = supabase_path
                     call_store.update_call(call_id, recording_files=files)
+
     # ────────────────────────────────────────────────────────────────────────
 
     async def on_client_connected(transport, client):
@@ -220,18 +234,18 @@ async def run_bot(transport: BaseTransport, handle_sigint: bool, phone_number: s
         # TRIGGER INSTANT GREETING
         # Instead of waiting for the LLM to generate a response, we provide a pre-defined greeting.
         # This eliminates the initial 7-10s delay.
-        greeting = "Hello! I am your AI assistant. How can I help you today?"
-        
+        greeting = agent_config.first_turn_instruction
+
         # 1. Update the LLM context manually so it knows it has greeted the user
         context.add_message({"role": "assistant", "content": greeting})
-        
+
         # 2. Queue the text frame directly to the pipeline.
         # This will be processed by TTS and sent to the transport immediately.
         await task.queue_frame(TextFrame(greeting))
 
     # Register transport-level handlers
     transport.add_event_handler("on_client_connected", on_client_connected)
-    
+
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
         logger.info("Outbound call ended")
@@ -245,25 +259,35 @@ async def run_bot(transport: BaseTransport, handle_sigint: bool, phone_number: s
     await runner.run(task)
 
 
-async def bot(runner_args: RunnerArguments, call_id: str = None, stream_id: str = None):
+async def bot(
+    runner_args: RunnerArguments,
+    call_id: str = None,
+    stream_id: str = None,
+    body_data: dict = None,
+    agent_id: str = None,
+):
     """Main bot entry point compatible with Pipecat Cloud."""
 
     # If call_id/stream_id not provided, try to parse from WebSocket (legacy behavior)
     if not call_id:
         # Parse the telephony WebSocket to extract stream_id and call_id
         # NOTE: This can be problematic if it consumes the handshake message!
-        transport_type, call_data = await parse_telephony_websocket(runner_args.websocket)
+        transport_type, call_data = await parse_telephony_websocket(
+            runner_args.websocket
+        )
         logger.info(f"Transport type: {transport_type}, Call data: {call_data}")
         stream_id = call_data.get("stream_id", "")
         call_id = call_data.get("call_id", "")
     elif not stream_id:
-        # If we have call_id (from query params) but no stream_id, 
+        # If we have call_id (from query params) but no stream_id,
         # we skip the parsing to avoid consuming handshake messages and just use call_id as stream_id.
         # Vobiz integration works fine with this for initial handshake.
         logger.info(f"Using call_id as stream_id - Call ID: {call_id}")
         stream_id = call_id
     else:
-        logger.info(f"Using pre-parsed call data - Call ID: {call_id}, Stream ID: {stream_id}")
+        logger.info(
+            f"Using pre-parsed call data - Call ID: {call_id}, Stream ID: {stream_id}"
+        )
 
     serializer = VobizFrameSerializer(
         stream_id=stream_id,
@@ -274,8 +298,8 @@ async def bot(runner_args: RunnerArguments, call_id: str = None, stream_id: str 
             vobiz_sample_rate=8000,
             encoding="audio/x-mulaw",  # Standard telephony encoding
             sample_rate=None,  # Uses pipeline default
-            auto_hang_up=True  # Automatically hangs up on EndFrame
-        )
+            auto_hang_up=True,  # Automatically hangs up on EndFrame
+        ),
     )
 
     transport = FastAPIWebsocketTransport(
@@ -284,11 +308,20 @@ async def bot(runner_args: RunnerArguments, call_id: str = None, stream_id: str 
             audio_in_enabled=True,
             audio_out_enabled=True,
             add_wav_header=False,  # CRITICAL: Must be False for telephony
-            serializer=serializer,  
-            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.25)), # Balanced for natural flow
+            serializer=serializer,
+            vad_analyzer=SileroVADAnalyzer(
+                params=VADParams(stop_secs=0.25)
+            ),  # Balanced for natural flow
         ),
     )
 
     handle_sigint = runner_args.handle_sigint
 
-    await run_bot(transport, handle_sigint, phone_number=None, call_id=call_id)
+    selected_agent_id = agent_id or (body_data.get("agent_id") if body_data else None)
+    await run_bot(
+        transport,
+        handle_sigint,
+        phone_number=None,
+        call_id=call_id,
+        agent_id=selected_agent_id,
+    )

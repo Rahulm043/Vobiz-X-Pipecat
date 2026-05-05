@@ -26,6 +26,10 @@ function formatDate(iso) {
     return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+function getCallAgentLabel(call) {
+    return call.metadata?.agent_name || call.metadata?.agent_id || 'default';
+}
+
 const RANGE_OPTIONS = [
     { label: 'Today', value: 'today' },
     { label: '7D', value: '7d' },
@@ -186,6 +190,7 @@ export default function Dashboard() {
                                 <th>Phone Number</th>
                                 <th>Name</th>
                                 <th>Type</th>
+                                <th>Agent</th>
                                 <th>Status</th>
                                 <th>Duration</th>
                                 <th>Time</th>
@@ -199,6 +204,7 @@ export default function Dashboard() {
                                     <td className="desktop-cell mono">{call.phone_number}</td>
                                     <td className="desktop-cell">{call.recipient_name || '—'}</td>
                                     <td className="desktop-cell"><span className={`badge ${call.call_type}`}>{call.call_type}</span></td>
+                                    <td className="desktop-cell"><span className="badge agent">{getCallAgentLabel(call)}</span></td>
                                     <td className="desktop-cell"><span className={`badge ${call.status}`}>{call.status}</span></td>
                                     <td className="desktop-cell">{call.duration_minutes ? `${call.duration_minutes} min` : formatDuration(call.duration_seconds)}</td>
                                     <td className="desktop-cell text-dim text-sm">{formatDate(call.created_at)}</td>
@@ -218,6 +224,8 @@ export default function Dashboard() {
                                         
                                         <div className="flex" style={{ gap: '0.3rem', fontSize: '0.7rem', color: 'var(--text-dim)', alignItems: 'center', flexWrap: 'wrap' }}>
                                             <span className={`badge ${call.call_type}`} style={{ padding: '0.1rem 0.3rem', fontSize: '0.65rem' }}>{call.call_type}</span>
+                                            <span>•</span>
+                                            <span>{getCallAgentLabel(call)}</span>
                                             <span>•</span>
                                             <span>{call.duration_minutes ? `${call.duration_minutes} min` : formatDuration(call.duration_seconds)}</span>
                                             <span>•</span>

@@ -1,5 +1,3 @@
-
-
 """server.py
 
 Webhook server to handle outbound call requests, initiate calls via Vobiz API,
@@ -12,6 +10,7 @@ import os
 import urllib.parse
 from contextlib import asynccontextmanager
 from datetime import datetime
+import inspect
 
 import aiohttp
 import uvicorn
@@ -21,12 +20,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pyngrok import ngrok
+
 load_dotenv(override=True)
 
 import call_store
 import csv_parser
 import supabase_storage
 from call_manager import get_call_manager
+from agents import list_agents, normalize_agent_id
 from auth_backend import get_current_user
 from fastapi import Depends
 
@@ -36,13 +37,17 @@ print(f"[DEBUG] USE_LIVE_BOT env: '{os.getenv('USE_LIVE_BOT')}', Effective: {use
 
 if use_live:
     import bot_live as bot_module
+
     print("[INFO] Using Gemini 3.1 Flash Live bot (bot_live.py)")
 else:
     import bot as bot_module
+
     print("[INFO] Using cascaded STT-LLM-TTS bot (bot.py)")
 
 bot = bot_module.bot
 run_bot = bot_module.run_bot
+bot_signature = inspect.signature(bot)
+run_bot_signature = inspect.signature(run_bot)
 
 
 # ----------------- ACTIVE CALLS TRACKING ----------------- #
@@ -71,7 +76,9 @@ async def make_vobiz_call(
         raise ValueError("Missing Vobiz Auth Token (VOBIZ_AUTH_TOKEN)")
 
     print(f"[DEBUG] Auth ID: {auth_id}")
-    print(f"[DEBUG] Auth Token: {auth_token[:10]}...{auth_token[-10:]}")  # Partial token for security
+    print(
+        f"[DEBUG] Auth Token: {auth_token[:10]}...{auth_token[-10:]}"
+    )  # Partial token for security
 
     headers = {
         "Content-Type": "application/json",
@@ -115,6 +122,7 @@ async def make_vobiz_call(
         print(f"[ERROR] Exception during Vobiz API call: {e}")
         print(f"[ERROR] Exception type: {type(e).__name__}")
         import traceback
+
         print(f"[ERROR] Traceback:\n{traceback.format_exc()}")
         print("[DEBUG] ========== VOBIZ API CALL END (WITH ERROR) ==========\n")
         raise
@@ -179,9 +187,7 @@ def get_host_and_protocol(request: Request = None):
 
 
 def get_websocket_url(host: str):
-    """Construct WebSocket URL for Vobiz Stream XML.
-
-    """
+    """Construct WebSocket URL for Vobiz Stream XML."""
     env = os.getenv("ENV", "local").lower()
 
     if env == "production":
@@ -250,13 +256,17 @@ async def http_exception_handler(request: Request, exc: HTTPException):
         response.headers["Access-Control-Allow-Headers"] = "*"
     return response
 
+
 # Debug middleware to log headers
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     auth_header = request.headers.get("Authorization")
-    print(f"[DEBUG] {request.method} {request.url.path} - Auth: {auth_header[:20] if auth_header else 'None'}...")
+    print(
+        f"[DEBUG] {request.method} {request.url.path} - Auth: {auth_header[:20] if auth_header else 'None'}..."
+    )
     response = await call_next(request)
     return response
+
 
 @app.post("/start", dependencies=[Depends(get_current_user)])
 async def initiate_outbound_call(request: Request) -> JSONResponse:
@@ -277,10 +287,13 @@ async def initiate_outbound_call(request: Request) -> JSONResponse:
 
         # Extract body data if provided
         body_data = data.get("body", {})
-        
+
         # Inject the parsed phone number into body_data so it reaches Pipecat
         body_data["phone_number"] = phone_number
-        
+        body_data["agent_id"] = normalize_agent_id(
+            data.get("agent_id") or body_data.get("agent_id")
+        )
+
         print(f"\n[INFO] Processing outbound call to {phone_number}")
         print(f"[DEBUG] Body data: {body_data}")
 
@@ -301,10 +314,12 @@ async def initiate_outbound_call(request: Request) -> JSONResponse:
         print(f"[DEBUG] From number: {from_number}")
 
         if not from_number:
-            print("[ERROR] VOBIZ_PHONE_NUMBER not set in environment and 'from_number' not provided in request")
+            print(
+                "[ERROR] VOBIZ_PHONE_NUMBER not set in environment and 'from_number' not provided in request"
+            )
             raise HTTPException(
                 status_code=400,
-                detail="Either set VOBIZ_PHONE_NUMBER in .env or provide 'from_number' in request body"
+                detail="Either set VOBIZ_PHONE_NUMBER in .env or provide 'from_number' in request body",
             )
 
         # Initiate outbound call via Vobiz
@@ -318,7 +333,11 @@ async def initiate_outbound_call(request: Request) -> JSONResponse:
             )
 
             # Extract call UUID from Vobiz response
-            call_uuid = call_result.get("request_uuid") or call_result.get("call_uuid") or "unknown"
+            call_uuid = (
+                call_result.get("request_uuid")
+                or call_result.get("call_uuid")
+                or "unknown"
+            )
             print(f"[SUCCESS] Call initiated successfully! Call UUID: {call_uuid}")
 
             # Register with CallManager
@@ -326,7 +345,8 @@ async def initiate_outbound_call(request: Request) -> JSONResponse:
             cm.register_external_call(
                 call_id=call_uuid,
                 phone_number=phone_number,
-                call_type="sip"
+                call_type="sip",
+                agent_id=body_data.get("agent_id"),
             )
 
             # Pre-create entry in active_calls for transfer tracking
@@ -335,15 +355,18 @@ async def initiate_outbound_call(request: Request) -> JSONResponse:
                     "status": "initiated",
                     "started_at": datetime.now().isoformat(),
                     "transfer_requested": False,
-                    "websocket": None
+                    "websocket": None,
                 }
                 print(f"[CALL] Pre-registered call {call_uuid} in active_calls")
 
         except Exception as e:
             print(f"[ERROR] Failed to initiate Vobiz call: {e}")
             import traceback
+
             print(f"[ERROR] Full traceback:\n{traceback.format_exc()}")
-            raise HTTPException(status_code=500, detail=f"Failed to initiate call: {str(e)}")
+            raise HTTPException(
+                status_code=500, detail=f"Failed to initiate call: {str(e)}"
+            )
 
     except HTTPException:
         raise
@@ -368,7 +391,7 @@ async def get_answer_xml(
 ) -> HTMLResponse:
     """Return XML instructions for connecting call to WebSocket or transferring to human."""
     print("\n[ANSWER] ========== ANSWER XML REQUEST ==========")
-    
+
     # Try to get CallUUID from query params if None
     if not CallUUID:
         CallUUID = request.query_params.get("CallUUID")
@@ -384,11 +407,16 @@ async def get_answer_xml(
                 parsed_body_data = json.loads(body_text)
             except json.JSONDecodeError:
                 from urllib.parse import parse_qs
+
                 parsed_body_data = {k: v[0] for k, v in parse_qs(body_text).items()}
-            
+
             # Check for CallUUID in standard Vobiz/Plivo fields
             if not CallUUID:
-                CallUUID = parsed_body_data.get("CallUUID") or parsed_body_data.get("call_uuid") or parsed_body_data.get("request_uuid")
+                CallUUID = (
+                    parsed_body_data.get("CallUUID")
+                    or parsed_body_data.get("call_uuid")
+                    or parsed_body_data.get("request_uuid")
+                )
     except Exception as e:
         print(f"[ANSWER] Error parsing body: {e}")
 
@@ -413,7 +441,9 @@ async def get_answer_xml(
         call_status_vobiz = parsed_body_data.get("CallStatus", "").lower()
         duration_str = parsed_body_data.get("Duration", "0")
 
-        print(f"[ANSWER] [HANGUP] HangupCause={hangup_cause}, Source={hangup_source}, VobizStatus={call_status_vobiz}")
+        print(
+            f"[ANSWER] [HANGUP] HangupCause={hangup_cause}, Source={hangup_source}, VobizStatus={call_status_vobiz}"
+        )
 
         # Map Vobiz HangupCause → our internal status
         if hangup_cause == "NORMAL_CLEARING":
@@ -426,7 +456,9 @@ async def get_answer_xml(
             internal_status = "rejected"
         else:
             # Unknown cause: use Vobiz's own call_status if available
-            internal_status = "completed" if call_status_vobiz == "completed" else "failed"
+            internal_status = (
+                "completed" if call_status_vobiz == "completed" else "failed"
+            )
 
         try:
             duration_seconds = float(duration_str)
@@ -452,21 +484,28 @@ async def get_answer_xml(
                 # Release the agent from "on_call" state
                 if cm._current_call_id == lookup_id:
                     cm._current_call_id = None
-                print(f"[ANSWER] \u2705 Call {lookup_id} updated \u2192 {internal_status} ({duration_seconds}s)")
+                print(
+                    f"[ANSWER] \u2705 Call {lookup_id} updated \u2192 {internal_status} ({duration_seconds}s)"
+                )
 
                 # Queue post-call transcription for meaningful completed calls
                 if internal_status == "completed" and duration_seconds > 5:
                     import transcriber as _transcriber
                     import asyncio as _asyncio
+
                     _asyncio.create_task(_transcriber.transcribe_and_store(lookup_id))
                     print(f"[ANSWER] \U0001f3a4 Transcription queued for {lookup_id}")
             else:
-                print(f"[ANSWER] \u26a0\ufe0f Call {lookup_id} not found in store for hangup update")
+                print(
+                    f"[ANSWER] \u26a0\ufe0f Call {lookup_id} not found in store for hangup update"
+                )
         else:
             print(f"[ANSWER] \u26a0\ufe0f No call ID available for hangup event")
 
         print("[ANSWER] ========== ANSWER XML END (HANGUP) ==========\n")
-        return HTMLResponse(content="<Response><Hangup/></Response>", media_type="application/xml")
+        return HTMLResponse(
+            content="<Response><Hangup/></Response>", media_type="application/xml"
+        )
     # ────────────────────────────────────────────────────────────────────────
 
     # PREVENT LOOPING: If the call is already marked as completed/failed, don't start the stream again.
@@ -474,15 +513,20 @@ async def get_answer_xml(
     if lookup_id:
         existing = call_store.get_call(lookup_id)
         if existing and existing.get("status") in ("completed", "failed"):
-            print(f"[ANSWER] [BLOCK LOOP] Call {lookup_id} is already {existing.get('status')} - returning Hangup")
-            return HTMLResponse(content="<Response><Hangup/></Response>", media_type="application/xml")
+            print(
+                f"[ANSWER] [BLOCK LOOP] Call {lookup_id} is already {existing.get('status')} - returning Hangup"
+            )
+            return HTMLResponse(
+                content="<Response><Hangup/></Response>", media_type="application/xml"
+            )
 
     # Check if this call is marked for transfer
     if CallUUID and CallUUID in active_calls:
-
         call_info = active_calls[CallUUID]
         if call_info.get("transfer_requested"):
-            print(f"[ANSWER] [TRANSFER] Call {CallUUID} is marked for transfer - returning Dial XML")
+            print(
+                f"[ANSWER] [TRANSFER] Call {CallUUID} is marked for transfer - returning Dial XML"
+            )
 
             # Get transfer destination
             agent_number = os.getenv("TRANSFER_AGENT_NUMBER", "+919148227303")
@@ -536,11 +580,15 @@ async def get_answer_xml(
         if cm_id_in_body:
             query_params.append(f"cm_id={urllib.parse.quote(cm_id_in_body)}")
 
-        # ③ CallUUID
+        # ③ selected demo agent
+        agent_id_in_body = normalize_agent_id(parsed_body_data.get("agent_id"))
+        query_params.append(f"agent_id={urllib.parse.quote(agent_id_in_body)}")
+
+        # ④ CallUUID
         if CallUUID:
             query_params.append(f"call_uuid={CallUUID}")
 
-        # ④ serviceHost for production
+        # ⑤ serviceHost for production
         env = os.getenv("ENV", "local").lower()
         if env == "production":
             agent_name = os.getenv("AGENT_NAME")
@@ -548,7 +596,7 @@ async def get_answer_xml(
             service_host = f"{agent_name}.{org_name}"
             query_params.append(f"serviceHost={urllib.parse.quote(service_host)}")
 
-        # ⑤ Full base64 body blob — long, goes last so truncation doesn't hurt short params
+        # ⑥ Full base64 body blob — long, goes last so truncation doesn't hurt short params
         if parsed_body_data:
             body_json = json.dumps(parsed_body_data)
             body_encoded = base64.b64encode(body_json.encode("utf-8")).decode("utf-8")
@@ -559,7 +607,11 @@ async def get_answer_xml(
 
         # Construct final WebSocket URL
         ws_url_base = f"wss://{host}/voice/ws"
-        final_ws_url = f"{ws_url_base}?{'&amp;'.join(query_params)}" if query_params else ws_url_base
+        final_ws_url = (
+            f"{ws_url_base}?{'&amp;'.join(query_params)}"
+            if query_params
+            else ws_url_base
+        )
 
         xml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -607,9 +659,13 @@ async def recording_finished(request: Request) -> HTMLResponse:
     if call_uuid and call_uuid in active_calls:
         active_calls[call_uuid]["recording_id"] = recording_id
         active_calls[call_uuid]["recording_url"] = recording_url
-        print(f"[RECORDING] [SUCCESS] Stored recording ID {recording_id} for call {call_uuid}")
+        print(
+            f"[RECORDING] [SUCCESS] Stored recording ID {recording_id} for call {call_uuid}"
+        )
     else:
-        print(f"[RECORDING] [WARNING] Call {call_uuid} not found in active_calls (may have ended)")
+        print(
+            f"[RECORDING] [WARNING] Call {call_uuid} not found in active_calls (may have ended)"
+        )
 
     # Optional: Download the recording
     # if recording_url:
@@ -667,15 +723,22 @@ async def recording_ready(request: Request) -> HTMLResponse:
                         filename = f"recordings/{recording_id}.mp3"
                         with open(filename, "wb") as f:
                             f.write(audio_data)
-                        print(f"[RECORDING CALLBACK] [SUCCESS] Downloaded to {filename}")
-                        print(f"[RECORDING CALLBACK] File size: {len(audio_data)} bytes")
+                        print(
+                            f"[RECORDING CALLBACK] [SUCCESS] Downloaded to {filename}"
+                        )
+                        print(
+                            f"[RECORDING CALLBACK] File size: {len(audio_data)} bytes"
+                        )
                     else:
-                        print(f"[RECORDING CALLBACK] [ERROR] Download failed: HTTP {resp.status}")
+                        print(
+                            f"[RECORDING CALLBACK] [ERROR] Download failed: HTTP {resp.status}"
+                        )
                         error_text = await resp.text()
                         print(f"[RECORDING CALLBACK] Error: {error_text}")
         except Exception as e:
             print(f"[RECORDING CALLBACK] [ERROR] Error downloading recording: {e}")
             import traceback
+
             print(f"[RECORDING CALLBACK] Traceback:\n{traceback.format_exc()}")
 
     print("[RECORDING CALLBACK] ========== RECORDING FILE READY END ==========\n")
@@ -718,11 +781,15 @@ async def initiate_transfer(request: Request) -> JSONResponse:
     call_uuid = data.get("call_uuid")
 
     if not call_uuid:
-        raise HTTPException(status_code=400, detail="Missing 'call_uuid' in request body")
+        raise HTTPException(
+            status_code=400, detail="Missing 'call_uuid' in request body"
+        )
 
     # Check if call exists in active_calls
     if call_uuid not in active_calls:
-        raise HTTPException(status_code=404, detail=f"Call {call_uuid} not found in active calls")
+        raise HTTPException(
+            status_code=404, detail=f"Call {call_uuid} not found in active calls"
+        )
 
     call_info = active_calls[call_uuid]
 
@@ -754,23 +821,27 @@ async def initiate_transfer(request: Request) -> JSONResponse:
     headers = {
         "X-Auth-ID": auth_id,
         "X-Auth-Token": auth_token,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
 
     transfer_data = {
         "legs": "aleg",  # Transfer the caller (A leg)
         "aleg_url": transfer_url,
-        "aleg_method": "POST"
+        "aleg_method": "POST",
     }
 
     print(f"[TRANSFER] Calling Vobiz Transfer API...")
     print(f"[TRANSFER] URL: {vobiz_url}")
     print(f"[TRANSFER] Data: {json.dumps(transfer_data, indent=2)}")
-    print(f"[TRANSFER] NOTE: Transfer API should close Stream and fetch new XML from {transfer_url}")
+    print(
+        f"[TRANSFER] NOTE: Transfer API should close Stream and fetch new XML from {transfer_url}"
+    )
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(vobiz_url, headers=headers, json=transfer_data) as resp:
+            async with session.post(
+                vobiz_url, headers=headers, json=transfer_data
+            ) as resp:
                 response_text = await resp.text()
                 print(f"[TRANSFER] Vobiz Response Status: {resp.status}")
                 print(f"[TRANSFER] Vobiz Response Body: {response_text}")
@@ -781,23 +852,28 @@ async def initiate_transfer(request: Request) -> JSONResponse:
                     print(f"[TRANSFER] Vobiz should now fetch XML from {transfer_url}")
                     print("[TRANSFER] ========== INITIATE TRANSFER END ==========\n")
 
-                    return JSONResponse({
-                        "status": "transfer_initiated",
-                        "call_uuid": call_uuid,
-                        "transfer_url": transfer_url,
-                        "vobiz_response": result
-                    })
+                    return JSONResponse(
+                        {
+                            "status": "transfer_initiated",
+                            "call_uuid": call_uuid,
+                            "transfer_url": transfer_url,
+                            "vobiz_response": result,
+                        }
+                    )
                 else:
                     print(f"[TRANSFER] ❌ Transfer failed!")
-                    print("[TRANSFER] ========== INITIATE TRANSFER END (FAILED) ==========\n")
+                    print(
+                        "[TRANSFER] ========== INITIATE TRANSFER END (FAILED) ==========\n"
+                    )
                     raise HTTPException(
                         status_code=resp.status,
-                        detail=f"Vobiz transfer failed: {response_text}"
+                        detail=f"Vobiz transfer failed: {response_text}",
                     )
 
     except Exception as e:
         print(f"[TRANSFER] ❌ Error during transfer: {e}")
         import traceback
+
         print(f"[TRANSFER] Traceback:\n{traceback.format_exc()}")
         print("[TRANSFER] ========== INITIATE TRANSFER END (ERROR) ==========\n")
         raise HTTPException(status_code=500, detail=f"Transfer error: {str(e)}")
@@ -815,16 +891,22 @@ async def get_active_calls() -> JSONResponse:
             "status": call_data.get("status"),
             "started_at": call_data.get("started_at"),
             "path": call_data.get("path"),
-            "recording_id": call_data.get("recording_id"),  # Include recording ID if available
-            "recording_url": call_data.get("recording_url")  # Include recording URL if available
+            "recording_id": call_data.get(
+                "recording_id"
+            ),  # Include recording ID if available
+            "recording_url": call_data.get(
+                "recording_url"
+            ),  # Include recording URL if available
             # Exclude 'websocket' as it's not JSON serializable
         }
 
-    return JSONResponse({
-        "active_calls": list(active_calls.keys()),
-        "count": len(active_calls),
-        "calls": calls_info
-    })
+    return JSONResponse(
+        {
+            "active_calls": list(active_calls.keys()),
+            "count": len(active_calls),
+            "calls": calls_info,
+        }
+    )
 
 
 # =================== CALL MANAGER API =================== #
@@ -838,13 +920,23 @@ async def api_agent_status():
 
 
 @app.get("/api/agent/stats", dependencies=[Depends(get_current_user)])
-async def api_agent_stats(date: str = None, start_date: str = None, end_date: str = None):
+async def api_agent_stats(
+    date: str = None, start_date: str = None, end_date: str = None
+):
     """Get aggregated call statistics for a date or range."""
-    return JSONResponse(call_store.get_agent_stats(
-        date_str=date, 
-        start_date=start_date, 
-        end_date=end_date
-    ))
+    return JSONResponse(
+        call_store.get_agent_stats(
+            date_str=date, start_date=start_date, end_date=end_date
+        )
+    )
+
+
+@app.get("/api/agents", dependencies=[Depends(get_current_user)])
+async def api_list_agents():
+    """List demo agents available for new calls and campaigns."""
+    return JSONResponse(
+        {"agents": list_agents(), "default_agent_id": normalize_agent_id(None)}
+    )
 
 
 @app.post("/api/calls/single", dependencies=[Depends(get_current_user)])
@@ -861,6 +953,7 @@ async def api_single_call(request: Request):
             phone_number=phone_number,
             recipient_name=data.get("recipient_name", ""),
             recipient_detail=data.get("recipient_detail", ""),
+            agent_id=data.get("agent_id"),
         )
         return JSONResponse(call_record)
     except Exception as e:
@@ -895,23 +988,28 @@ async def api_get_call(call_id: str):
     return JSONResponse(call)
 
 
-@app.get("/api/calls/{call_id}/recording-url/{track}", dependencies=[Depends(get_current_user)])
+@app.get(
+    "/api/calls/{call_id}/recording-url/{track}",
+    dependencies=[Depends(get_current_user)],
+)
 async def api_get_recording_url(call_id: str, track: str):
     """Get a signed URL for a specific recording track (stereo, user, bot)."""
     call = call_store.get_call(call_id)
     if not call:
         raise HTTPException(status_code=404, detail="Call not found")
-    
+
     recording_files = call.get("recording_files", {})
     storage_path = recording_files.get(f"{track}_remote")
-    
+
     if not storage_path:
-        raise HTTPException(status_code=404, detail=f"Remote recording for {track} not found")
-    
+        raise HTTPException(
+            status_code=404, detail=f"Remote recording for {track} not found"
+        )
+
     signed_url = supabase_storage.get_signed_url(storage_path)
     if not signed_url:
         raise HTTPException(status_code=500, detail="Failed to generate signed URL")
-        
+
     return JSONResponse({"url": signed_url})
 
 
@@ -924,6 +1022,7 @@ async def api_create_campaign(request: Request):
     mode = data.get("mode", "sequential")
     concurrent_limit = data.get("concurrent_limit", 1)
     call_gap_seconds = data.get("call_gap_seconds", 30)
+    agent_id = data.get("agent_id")
 
     if not recipients:
         raise HTTPException(status_code=400, detail="No recipients provided")
@@ -935,6 +1034,7 @@ async def api_create_campaign(request: Request):
         mode=mode,
         concurrent_limit=concurrent_limit,
         call_gap_seconds=call_gap_seconds,
+        agent_id=agent_id,
     )
     return JSONResponse(campaign)
 
@@ -958,7 +1058,9 @@ async def api_get_campaign(campaign_id: str):
     return JSONResponse({"campaign": campaign, "calls": calls})
 
 
-@app.post("/api/campaigns/{campaign_id}/pause", dependencies=[Depends(get_current_user)])
+@app.post(
+    "/api/campaigns/{campaign_id}/pause", dependencies=[Depends(get_current_user)]
+)
 async def api_pause_campaign(campaign_id: str):
     cm = get_call_manager()
     try:
@@ -968,7 +1070,9 @@ async def api_pause_campaign(campaign_id: str):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.post("/api/campaigns/{campaign_id}/resume", dependencies=[Depends(get_current_user)])
+@app.post(
+    "/api/campaigns/{campaign_id}/resume", dependencies=[Depends(get_current_user)]
+)
 async def api_resume_campaign(campaign_id: str):
     cm = get_call_manager()
     try:
@@ -978,7 +1082,9 @@ async def api_resume_campaign(campaign_id: str):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.post("/api/campaigns/{campaign_id}/cancel", dependencies=[Depends(get_current_user)])
+@app.post(
+    "/api/campaigns/{campaign_id}/cancel", dependencies=[Depends(get_current_user)]
+)
 async def api_cancel_campaign(campaign_id: str):
     cm = get_call_manager()
     await cm.cancel_campaign(campaign_id)
@@ -997,7 +1103,9 @@ async def api_upload_recipients(
         if filename.endswith(".xlsx") or filename.endswith(".xls"):
             result = csv_parser.parse_excel_bytes(content)
         else:
-            result = csv_parser.parse_csv_text(content.decode("utf-8", errors="replace"))
+            result = csv_parser.parse_csv_text(
+                content.decode("utf-8", errors="replace")
+            )
     else:
         # Try reading raw text from body
         body = await request.body()
@@ -1051,19 +1159,36 @@ async def handle_vobiz_websocket(
     cm_id_param = websocket.query_params.get("cm_id", "")
     if ph_param and not body_data.get("phone_number"):
         body_data["phone_number"] = urllib.parse.unquote(ph_param)
-        print(f"[PHONE] Recovered phone_number from 'ph' query param: {body_data['phone_number']}")
+        print(
+            f"[PHONE] Recovered phone_number from 'ph' query param: {body_data['phone_number']}"
+        )
     elif ph_param:
         # Always prefer the dedicated param (shorter, definitely not truncated)
         body_data["phone_number"] = urllib.parse.unquote(ph_param)
     if cm_id_param and not body_data.get("call_manager_id"):
         body_data["call_manager_id"] = urllib.parse.unquote(cm_id_param)
-        print(f"[CALLMGR] Recovered call_manager_id from 'cm_id' query param: {body_data['call_manager_id']}")
+        print(
+            f"[CALLMGR] Recovered call_manager_id from 'cm_id' query param: {body_data['call_manager_id']}"
+        )
     elif cm_id_param:
         body_data["call_manager_id"] = urllib.parse.unquote(cm_id_param)
-    print(f"[PHONE] Final phone_number in body_data: {body_data.get('phone_number', 'MISSING')}")
-    print(f"[CALLMGR] Final call_manager_id in body_data: {body_data.get('call_manager_id', 'MISSING')}")
+    print(
+        f"[PHONE] Final phone_number in body_data: {body_data.get('phone_number', 'MISSING')}"
+    )
+    print(
+        f"[CALLMGR] Final call_manager_id in body_data: {body_data.get('call_manager_id', 'MISSING')}"
+    )
+
+    agent_id_param = websocket.query_params.get("agent_id", "")
+    if agent_id_param:
+        body_data["agent_id"] = normalize_agent_id(urllib.parse.unquote(agent_id_param))
+    else:
+        body_data["agent_id"] = normalize_agent_id(body_data.get("agent_id"))
+    selected_agent_id = body_data["agent_id"]
+    print(f"[AGENT] Selected agent for SIP call: {selected_agent_id}")
 
     call_uuid = None
+    call_id_to_use = None
 
     try:
         from pipecat.runner.types import WebSocketRunnerArguments
@@ -1076,40 +1201,43 @@ async def handle_vobiz_websocket(
         # CRITICAL FIX: Do NOT parse the WebSocket here using parse_telephony_websocket(websocket)
         # That would consume the initial handshake messages, leaving the socket "empty" for the Pipecat transport.
         # Instead, we rely on the query parameters we put in the XML (call_uuid).
-        
+
         # Get IDs from query params (preferred) or just generate/placeholder if missing
         call_uuid = websocket.query_params.get("call_uuid")
         if not call_uuid:
-             call_uuid = websocket.query_params.get("call_id")
-        
+            call_uuid = websocket.query_params.get("call_id")
+
         # Stream ID might come later in the protocol, but for Vobiz/Plivo it's often in the start message.
         # Since we can't read the start message here without breaking Pipecat, we pass None
         # and let bot.py's transport handle the protocol handshake naturally.
-        stream_id = None 
+        stream_id = None
 
         if call_uuid:
             # Register with CallManager if not already tracked
             cm = get_call_manager()
             # Determine call type from path
             ctype = "web" if "web" in path else "sip"
-            
+
             # LINKING FIX:
             # If we have a call_manager_id in body_data, that's our internal ID.
             # call_uuid is the Vobiz UUID.
             internal_id = body_data.get("call_manager_id")
-            
+
             if internal_id:
                 # Update existing record with the Vobiz UUID
                 call_store.update_call(internal_id, vobiz_call_uuid=call_uuid)
                 call_id_to_use = internal_id
-                print(f"[CALL] Linked Vobiz UUID {call_uuid} to internal ID {internal_id}")
+                print(
+                    f"[CALL] Linked Vobiz UUID {call_uuid} to internal ID {internal_id}"
+                )
             else:
                 call_id_to_use = call_uuid
 
             cm.register_external_call(
                 call_id=call_id_to_use,
                 phone_number=body_data.get("phone_number", ""),
-                call_type=ctype
+                call_type=ctype,
+                agent_id=selected_agent_id,
             )
 
             # Update or create entry in active_calls with WebSocket reference
@@ -1119,7 +1247,9 @@ async def handle_vobiz_websocket(
                 active_calls[active_id]["status"] = "active"
                 active_calls[active_id]["websocket"] = websocket
                 active_calls[active_id]["path"] = path
-                print(f"[CALL] [SUCCESS] Updated existing call {active_id} with WebSocket")
+                print(
+                    f"[CALL] [SUCCESS] Updated existing call {active_id} with WebSocket"
+                )
             else:
                 # Create new entry
                 active_calls[active_id] = {
@@ -1127,7 +1257,7 @@ async def handle_vobiz_websocket(
                     "started_at": datetime.now().isoformat(),
                     "path": path,
                     "websocket": websocket,
-                    "transfer_requested": False
+                    "transfer_requested": False,
                 }
                 print(f"[CALL] [SUCCESS] Created new call entry for {active_id}")
 
@@ -1142,14 +1272,19 @@ async def handle_vobiz_websocket(
 
         print("[DEBUG] Calling bot function...")
         # Make a backwards-compatible call, passing body_data to bot if it supports it
-        import inspect
-        sig = inspect.signature(bot)
-        kwargs = {"runner_args": runner_args, "call_id": call_id_to_use, "stream_id": stream_id}
+        sig = bot_signature
+        kwargs = {
+            "runner_args": runner_args,
+            "call_id": call_id_to_use,
+            "stream_id": stream_id,
+        }
         if "vobiz_call_id" in sig.parameters:
             kwargs["vobiz_call_id"] = call_uuid
         if "body_data" in sig.parameters:
             kwargs["body_data"] = body_data
-            
+        if "agent_id" in sig.parameters:
+            kwargs["agent_id"] = selected_agent_id
+
         await bot(**kwargs)
 
         print("[DEBUG] Bot function completed")
@@ -1157,6 +1292,7 @@ async def handle_vobiz_websocket(
     except Exception as e:
         print(f"[ERROR] Error in WebSocket endpoint: {e}")
         import traceback
+
         print(f"[ERROR] Traceback:\n{traceback.format_exc()}")
         # Mark the call as failed so campaigns can proceed instead of polling forever
         if call_id_to_use:
@@ -1173,11 +1309,15 @@ async def handle_vobiz_websocket(
     finally:
         # Remove call from active_calls when WebSocket closes
         # BUT: Don't remove if call is being transferred (status == "transferring")
-        active_id = (body_data.get("call_manager_id") if body_data else None) or call_uuid
+        active_id = (
+            body_data.get("call_manager_id") if body_data else None
+        ) or call_uuid
         if active_id and active_id in active_calls:
             call_status = active_calls[active_id].get("status", "active")
             if call_status == "transferring":
-                print(f"[CALL] [TRANSFER] Call {active_id} is being transferred - keeping in active_calls")
+                print(
+                    f"[CALL] [TRANSFER] Call {active_id} is being transferred - keeping in active_calls"
+                )
                 # Remove websocket reference but keep call record for transfer
                 active_calls[active_id]["websocket"] = None
             else:
@@ -1190,7 +1330,7 @@ async def handle_vobiz_websocket(
 # ----------------- WEB CLIENT (RTVI WebSocket) ----------------- #
 
 
-async def _run_web_bot(websocket: WebSocket):
+async def _run_web_bot(websocket: WebSocket, agent_id: str = None):
     """Run the bot pipeline for browser clients using the RTVI WebSocket protocol.
 
     Unlike the Vobiz telephony endpoints this does NOT use VobizFrameSerializer.
@@ -1205,7 +1345,10 @@ async def _run_web_bot(websocket: WebSocket):
     from pipecat.audio.vad.silero import SileroVADAnalyzer
     from pipecat.audio.vad.vad_analyzer import VADParams
 
-    print("[WEB] Browser client connected via /web-ws")
+    selected_agent_id = normalize_agent_id(
+        agent_id or websocket.query_params.get("agent_id")
+    )
+    print(f"[WEB] Browser client connected via /web-ws using agent {selected_agent_id}")
 
     try:
         await websocket.accept()
@@ -1234,6 +1377,7 @@ async def _run_web_bot(websocket: WebSocket):
 
     # Unique call_id per session so recordings don't overwrite each other
     import uuid
+
     web_call_id = str(uuid.uuid4())
     print(f"[WEB] Session ID: {web_call_id}")
 
@@ -1243,12 +1387,22 @@ async def _run_web_bot(websocket: WebSocket):
         call_id=web_call_id,
         phone_number="web-user",
         call_type="web",
+        agent_id=selected_agent_id,
     )
 
     try:
-        await run_bot(transport, handle_sigint=False, phone_number="web-user", call_id=web_call_id)
+        kwargs = {
+            "transport": transport,
+            "handle_sigint": False,
+            "phone_number": "web-user",
+            "call_id": web_call_id,
+        }
+        if "agent_id" in run_bot_signature.parameters:
+            kwargs["agent_id"] = selected_agent_id
+        await run_bot(**kwargs)
     except Exception as e:
         import traceback
+
         print(f"[WEB] Error running web bot: {e}")
         print(traceback.format_exc())
     finally:
@@ -1256,17 +1410,18 @@ async def _run_web_bot(websocket: WebSocket):
 
 
 @app.websocket("/web-ws")
-async def websocket_web_client(websocket: WebSocket):
+async def websocket_web_client(websocket: WebSocket, agent_id: str = Query(None)):
     """RTVI WebSocket endpoint for browser clients.
 
     Connect from the React frontend:
         const transport = new WebSocketTransport();
         await client.connect({ url: 'ws://localhost:7860/web-ws' });
     """
-    await _run_web_bot(websocket)
+    await _run_web_bot(websocket, agent_id=agent_id)
 
 
 # ----------------- TELEPHONY WebSocket endpoints ----------------- #
+
 
 # Register WebSocket endpoints for common paths Vobiz might use
 @app.websocket("/ws")
@@ -1323,9 +1478,13 @@ if __name__ == "__main__":
         try:
             # Kill existing ngrok instances to avoid conflicts
             import subprocess
-            subprocess.run(["taskkill", "/F", "/IM", "ngrok.exe"], 
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            
+
+            subprocess.run(
+                ["taskkill", "/F", "/IM", "ngrok.exe"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
             port = 7860
             public_url = ngrok.connect(port).public_url
             print(f"\n[NGROK] Tunnel active at: {public_url}")

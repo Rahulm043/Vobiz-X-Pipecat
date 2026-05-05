@@ -1,10 +1,11 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
+import useSWR from 'swr';
 import { useNavigate } from 'react-router-dom';
 import {
     Upload, FileSpreadsheet, Plus, Trash2, Play, AlertCircle,
     Users, Settings2, ArrowRight,
 } from 'lucide-react';
-import { authFetch } from '../utils/api.js';
+import { authFetch, swrFetcher } from '../utils/api.js';
 
 export default function NewCampaign() {
     const navigate = useNavigate();
@@ -21,6 +22,16 @@ export default function NewCampaign() {
     const [uploadResult, setUploadResult] = useState(null);
     const [launching, setLaunching] = useState(false);
     const [error, setError] = useState(null);
+    const { data: agentsData = { agents: [], default_agent_id: 'bcrec' } } = useSWR('/api/agents', swrFetcher);
+    const agents = agentsData.agents?.length ? agentsData.agents : [{ id: 'bcrec', name: 'BCREC Admissions', description: 'Default demo agent.' }];
+    const [selectedAgentId, setSelectedAgentId] = useState('bcrec');
+    const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) || agents[0];
+
+    useEffect(() => {
+        if (agents.length > 0 && !agents.some((agent) => agent.id === selectedAgentId)) {
+            setSelectedAgentId(agentsData.default_agent_id || agents[0].id);
+        }
+    }, [agents, agentsData.default_agent_id, selectedAgentId]);
 
     const handleFileUpload = async (e) => {
         const file = e.target.files?.[0];
@@ -78,6 +89,7 @@ export default function NewCampaign() {
                 body: JSON.stringify({
                     name, mode, concurrent_limit: concurrentLimit,
                     call_gap_seconds: callGapSeconds, recipients,
+                    agent_id: selectedAgent.id,
                 }),
             });
             const data = await res.json();
@@ -104,6 +116,18 @@ export default function NewCampaign() {
                 <div>
                     <div className="card">
                         <h3 className="section-title flex-center"><Settings2 size={18} /> Configuration</h3>
+
+                        <div className="form-group">
+                            <label>Demo Agent</label>
+                            <select value={selectedAgent.id} onChange={(e) => setSelectedAgentId(e.target.value)}>
+                                {agents.map((agent) => (
+                                    <option key={agent.id} value={agent.id}>{agent.name}</option>
+                                ))}
+                            </select>
+                            <p className="text-sm text-dim" style={{ marginTop: '0.5rem' }}>
+                                {selectedAgent.description || 'Choose which agent handles every call in this campaign.'}
+                            </p>
+                        </div>
 
                         <div className="form-group">
                             <label>Campaign Name</label>

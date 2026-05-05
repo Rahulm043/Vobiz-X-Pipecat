@@ -48,6 +48,7 @@ import transcriber
 import supabase_storage
 from bcrec_counselor_prompt import BCREC_COUNSELOR_PROMPT
 from bcrec_course_rag import search_bcrec_course_details
+from agents import get_agent_config
 
 load_dotenv(override=True)
 
@@ -287,7 +288,11 @@ async def run_bot(
     call_id: str = None,
     vobiz_call_id: str = None,
     serializer: VobizFrameSerializer = None,
+    agent_id: str = None,
 ):
+    agent_config = get_agent_config(agent_id)
+    logger.info(f"[AGENT] Starting agent '{agent_config.id}' for call_id={call_id}")
+
     bg_tasks = set()
     state = {"whatsapp_sent_at": 0, "terminating": False, "pending_termination": False}
     call_state = {
@@ -305,45 +310,51 @@ async def run_bot(
     )
     # ────────────────────────────────────────────────────────────────────────
 
-    tools_def = [
-        {
-            "function_declarations": [
-                {
-                    "name": "send_whatsapp_message",
-                    "description": "Sends any requested details (addresses, timings, admission links, course summaries, etc.) via WhatsApp. Use its 'custom_message' field to write the response in natural language.",
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "custom_message": {
-                                "type": "STRING",
-                                "description": "The natural language message content based on user's request.",
-                            }
-                        },
-                        "required": ["custom_message"],
+    function_declarations = []
+    if "send_whatsapp_message" in agent_config.tools:
+        function_declarations.append(
+            {
+                "name": "send_whatsapp_message",
+                "description": "Sends requested details via WhatsApp. Use its 'custom_message' field to write the response in natural language.",
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "custom_message": {
+                            "type": "STRING",
+                            "description": "The natural language message content based on user's request.",
+                        }
                     },
+                    "required": ["custom_message"],
                 },
-                {
-                    "name": "search_bcrec_course_details",
-                    "description": "Searches detailed BCREC B.Tech course context using hybrid retrieval and reranking. Use for detailed stream/course questions about labs, careers, intake, accreditation, placements, research, HOD, facilities, or comparisons.",
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "query": {
-                                "type": "STRING",
-                                "description": "Focused query containing the stream/course and detail needed, e.g. 'CSE AI ML labs and career pathways' or 'Electrical Engineering NBA intake placements'.",
-                            }
-                        },
-                        "required": ["query"],
+            }
+        )
+    if "search_bcrec_course_details" in agent_config.tools:
+        function_declarations.append(
+            {
+                "name": "search_bcrec_course_details",
+                "description": "Searches detailed BCREC B.Tech course context using hybrid retrieval and reranking. Use for detailed stream/course questions about labs, careers, intake, accreditation, placements, research, HOD, facilities, or comparisons.",
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "query": {
+                            "type": "STRING",
+                            "description": "Focused query containing the stream/course and detail needed, e.g. 'CSE AI ML labs and career pathways' or 'Electrical Engineering NBA intake placements'.",
+                        }
                     },
+                    "required": ["query"],
                 },
-                {
-                    "name": "end_call",
-                    "description": "IMMEDIATELY terminates the call and hangs up. Use when user says 'Rakho', 'Rakhchi', 'Goodbye', 'Bye', or finishes conversation.",
-                    "parameters": {"type": "OBJECT", "properties": {}},
-                },
-            ]
-        }
-    ]
+            }
+        )
+    if "end_call" in agent_config.tools:
+        function_declarations.append(
+            {
+                "name": "end_call",
+                "description": "IMMEDIATELY terminates the call and hangs up. Use when user says 'Rakho', 'Rakhchi', 'Goodbye', 'Bye', or finishes conversation.",
+                "parameters": {"type": "OBJECT", "properties": {}},
+            }
+        )
+
+    tools_def = [{"function_declarations": function_declarations}]
 
     # Gemini Multimodal Live Service correctly configured
     llm = GeminiLiveLLMService(
@@ -351,8 +362,8 @@ async def run_bot(
         tools=tools_def,
         settings=GeminiLiveLLMService.Settings(
             model="models/gemini-3.1-flash-live-preview",
-            voice=DEFAULT_VOICE,
-            system_instruction=DEFAULT_AGENT_PROMPT,
+            voice=agent_config.voice,
+            system_instruction=agent_config.system_prompt,
         ),
     )
 
@@ -392,19 +403,7 @@ async def run_bot(
             await params.result_callback({"error": "No phone number available."})
             return
 
-        standard_info = """
-Dr. B. C. Roy Engineering College, Durgapur (BCREC)
-B.Tech Courses: Civil, CSD, CSE, CSE (AI & ML), CSE (Data Science), CSE (Cyber Security), Electrical, ECE, IT, Mechanical
-
-Official Website: https://www.bcrec.ac.in
-B.Tech Courses: https://www.bcrec.ac.in/btech-courses/kolkata-westbengal
-Admission Enquiry: https://www.bcrec.ac.in/inquery
-Admission Process: https://www.bcrec.ac.in/custom-page/62a71b1551f19
-Phone: (0343)-2501353, 2504106
-Mobile: +91-6297128554
-Email: info@bcrec.ac.in
-"""
-        full_text = f"{custom_message}\n\n{standard_info}".strip()
+        full_text = f"{custom_message}\n\n{agent_config.whatsapp_standard_info}".strip()
 
         # Deduplication: Ignore if sent in the last 60 seconds
         now = time.time()
@@ -492,7 +491,8 @@ Email: info@bcrec.ac.in
 
         asyncio.create_task(_safety_termination_fallback())
 
-    llm.register_function("send_whatsapp_message", send_whatsapp_message)
+    if "send_whatsapp_message" in agent_config.tools:
+        llm.register_function("send_whatsapp_message", send_whatsapp_message)
 
     async def search_bcrec_course_details_tool(params: FunctionCallParams):
         args = params.arguments if hasattr(params, "arguments") else {}
@@ -501,10 +501,12 @@ Email: info@bcrec.ac.in
         result = search_bcrec_course_details(query=query, top_k=5)
         await params.result_callback({"status": "success", "context": result})
 
-    llm.register_function(
-        "search_bcrec_course_details", search_bcrec_course_details_tool
-    )
-    llm.register_function("end_call", end_call)
+    if "search_bcrec_course_details" in agent_config.tools:
+        llm.register_function(
+            "search_bcrec_course_details", search_bcrec_course_details_tool
+        )
+    if "end_call" in agent_config.tools:
+        llm.register_function("end_call", end_call)
 
     # ── Recording event handlers ─────────────────────────────────────────────
     @audiobuffer.event_handler("on_audio_data")
@@ -584,7 +586,7 @@ Email: info@bcrec.ac.in
 
     # PROPER INITIALIZATION (Matching Sample)
     context = LLMContext(
-        messages=[{"role": "system", "content": FIRST_TURN_INSTRUCTION}]
+        messages=[{"role": "system", "content": agent_config.first_turn_instruction}]
     )
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
@@ -705,10 +707,12 @@ async def bot(
     vobiz_call_id: str = None,
     stream_id: str = None,
     body_data: dict = None,
+    agent_id: str = None,
 ):
     """Main bot entry point compatible with Pipecat Cloud."""
 
     phone_number = body_data.get("phone_number") if body_data else None
+    selected_agent_id = agent_id or (body_data.get("agent_id") if body_data else None)
 
     if not call_id:
         transport_type, call_data = await parse_telephony_websocket(
@@ -765,4 +769,5 @@ async def bot(
         call_id=call_id,
         vobiz_call_id=vobiz_call_id,
         serializer=serializer,
+        agent_id=selected_agent_id,
     )

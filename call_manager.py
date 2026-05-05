@@ -14,6 +14,7 @@ from loguru import logger
 
 import call_store
 from campaign_runner import CampaignRunner
+from agents import get_agent_config, normalize_agent_id
 
 
 class CallManager:
@@ -33,7 +34,8 @@ class CallManager:
         """Return current agent status and activity."""
         # Check for running campaigns
         running_campaigns = {
-            cid: runner for cid, runner in self.active_campaigns.items()
+            cid: runner
+            for cid, runner in self.active_campaigns.items()
             if runner.is_running
         }
 
@@ -64,15 +66,20 @@ class CallManager:
                 created_at = call.get("ringing_at") or call.get("created_at", "")
                 try:
                     from datetime import timezone
+
                     call_age_seconds = 0
                     if created_at:
                         ts = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-                        call_age_seconds = (datetime.now(timezone.utc) - ts).total_seconds()
+                        call_age_seconds = (
+                            datetime.now(timezone.utc) - ts
+                        ).total_seconds()
                 except Exception:
                     call_age_seconds = 0
 
                 if call_age_seconds > 600:  # 10 minutes
-                    logger.warning(f"[CALLMGR] Call {self._current_call_id} stuck in ringing for {call_age_seconds:.0f}s — auto-failing")
+                    logger.warning(
+                        f"[CALLMGR] Call {self._current_call_id} stuck in ringing for {call_age_seconds:.0f}s — auto-failing"
+                    )
                     call_store.update_call(
                         self._current_call_id,
                         status="failed",
@@ -105,8 +112,11 @@ class CallManager:
         recipient_detail: str = "",
         campaign_id: Optional[str] = None,
         call_type: str = "sip",
+        agent_id: str = None,
     ) -> Dict[str, Any]:
         """Initiate a single outbound SIP call via Vobiz API."""
+        selected_agent_id = normalize_agent_id(agent_id)
+        agent_config = get_agent_config(selected_agent_id)
 
         # Create call record
         call_record = call_store.make_call_record(
@@ -115,6 +125,7 @@ class CallManager:
             campaign_id=campaign_id,
             recipient_name=recipient_name,
             recipient_detail=recipient_detail,
+            metadata={"agent_id": selected_agent_id, "agent_name": agent_config.name},
         )
         call_store.save_call(call_record)
 
@@ -125,19 +136,28 @@ class CallManager:
 
         # SIP call via Vobiz API
         try:
-            call_store.update_call(call_record["call_id"], status="ringing",
-                                   ringing_at=datetime.now(timezone.utc).isoformat())
+            call_store.update_call(
+                call_record["call_id"],
+                status="ringing",
+                ringing_at=datetime.now(timezone.utc).isoformat(),
+            )
             self._current_call_id = call_record["call_id"]
 
-            result = await self._initiate_vobiz_call(phone_number, call_record["call_id"])
+            result = await self._initiate_vobiz_call(
+                phone_number, call_record["call_id"], selected_agent_id
+            )
 
-            vobiz_uuid = result.get("request_uuid") or result.get("call_uuid") or "unknown"
+            vobiz_uuid = (
+                result.get("request_uuid") or result.get("call_uuid") or "unknown"
+            )
             call_store.update_call(
                 call_record["call_id"],
                 vobiz_call_uuid=vobiz_uuid,
             )
 
-            logger.info(f"[CALLMGR] Call {call_record['call_id']} initiated → Vobiz UUID: {vobiz_uuid}")
+            logger.info(
+                f"[CALLMGR] Call {call_record['call_id']} initiated → Vobiz UUID: {vobiz_uuid}"
+            )
             return call_store.get_call(call_record["call_id"])
 
         except Exception as e:
@@ -150,7 +170,9 @@ class CallManager:
             )
             raise
 
-    async def _initiate_vobiz_call(self, phone_number: str, call_id: str) -> dict:
+    async def _initiate_vobiz_call(
+        self, phone_number: str, call_id: str, agent_id: str
+    ) -> dict:
         """Make the actual Vobiz REST API call."""
         import json
         import urllib.parse
@@ -164,7 +186,11 @@ class CallManager:
             raise ValueError("Missing Vobiz credentials or PUBLIC_URL in .env")
 
         # Build answer URL with call metadata
-        body_data = {"phone_number": phone_number, "call_manager_id": call_id}
+        body_data = {
+            "phone_number": phone_number,
+            "call_manager_id": call_id,
+            "agent_id": normalize_agent_id(agent_id),
+        }
         body_encoded = urllib.parse.quote(json.dumps(body_data))
 
         protocol = "https" if public_url.startswith("https") else "http"
@@ -191,7 +217,9 @@ class CallManager:
             async with session.post(url, headers=headers, json=data) as response:
                 response_text = await response.text()
                 if response.status != 201:
-                    raise Exception(f"Vobiz API error ({response.status}): {response_text}")
+                    raise Exception(
+                        f"Vobiz API error ({response.status}): {response_text}"
+                    )
                 return json.loads(response_text)
         finally:
             if close_session:
@@ -206,11 +234,22 @@ class CallManager:
         mode: str = "sequential",
         concurrent_limit: int = 1,
         call_gap_seconds: int = 30,
+        agent_id: str = None,
     ) -> Dict[str, Any]:
         """Create and start a new campaign."""
+        selected_agent_id = normalize_agent_id(agent_id)
+        agent_config = get_agent_config(selected_agent_id)
+        recipients_with_agent = [
+            {
+                **recipient,
+                "agent_id": selected_agent_id,
+                "agent_name": agent_config.name,
+            }
+            for recipient in recipients
+        ]
         campaign = call_store.make_campaign_record(
             name=name,
-            recipients=recipients,
+            recipients=recipients_with_agent,
             mode=mode,
             concurrent_limit=concurrent_limit,
             call_gap_seconds=call_gap_seconds,
@@ -223,11 +262,14 @@ class CallManager:
             mode=mode,
             concurrent_limit=concurrent_limit,
             call_gap_seconds=call_gap_seconds,
+            agent_id=selected_agent_id,
         )
         self.active_campaigns[campaign["campaign_id"]] = runner
         await runner.start()
 
-        logger.info(f"[CALLMGR] Campaign '{name}' started with {len(recipients)} recipients")
+        logger.info(
+            f"[CALLMGR] Campaign '{name}' started with {len(recipients)} recipients"
+        )
         return campaign
 
     async def pause_campaign(self, campaign_id: str):
@@ -252,6 +294,7 @@ class CallManager:
                 mode=campaign.get("mode", "sequential"),
                 concurrent_limit=campaign.get("concurrent_limit", 1),
                 call_gap_seconds=campaign.get("call_gap_seconds", 30),
+                agent_id=(campaign.get("recipients") or [{}])[0].get("agent_id"),
             )
             self.active_campaigns[campaign_id] = runner
             await runner.start()
@@ -273,24 +316,40 @@ class CallManager:
         phone_number: str = "",
         call_type: str = "sip",
         campaign_id: Optional[str] = None,
+        agent_id: str = None,
     ) -> Dict[str, Any]:
         """Register an already-initiated call (e.g. from Vobiz webhook)."""
         existing = call_store.get_call(call_id)
         if existing:
+            selected_agent_id = normalize_agent_id(
+                agent_id or existing.get("metadata", {}).get("agent_id")
+            )
+            agent_config = get_agent_config(selected_agent_id)
+            metadata = {
+                **existing.get("metadata", {}),
+                "agent_id": selected_agent_id,
+                "agent_name": agent_config.name,
+            }
+            call_store.update_call(existing["call_id"], metadata=metadata)
             return existing
 
+        selected_agent_id = normalize_agent_id(agent_id)
+        agent_config = get_agent_config(selected_agent_id)
         call_record = call_store.make_call_record(
             call_id=call_id,
             phone_number=phone_number,
             call_type=call_type,
             campaign_id=campaign_id,
+            metadata={"agent_id": selected_agent_id, "agent_name": agent_config.name},
         )
         call_record["status"] = "ringing"
         call_record["ringing_at"] = datetime.now(timezone.utc).isoformat()
         call_store.save_call(call_record)
-        
+
         self._current_call_id = call_id
-        logger.info(f"[CALLMGR] Registered external call {call_id} (to: {phone_number})")
+        logger.info(
+            f"[CALLMGR] Registered external call {call_id} (to: {phone_number})"
+        )
         return call_record
 
     # --------------- Call Lifecycle Events (from bot_live.py) --------------- #
@@ -307,7 +366,9 @@ class CallManager:
         self._current_call_id = call_id
         logger.info(f"[CALLMGR] Call {call_id} connected")
 
-    def on_call_ended(self, call_id: str, duration_seconds: float = 0, end_reason: str = "hangup"):
+    def on_call_ended(
+        self, call_id: str, duration_seconds: float = 0, end_reason: str = "hangup"
+    ):
         """Called when a call ends."""
         call_store.update_call(
             call_id,
@@ -319,7 +380,9 @@ class CallManager:
         )
         if self._current_call_id == call_id:
             self._current_call_id = None
-        logger.info(f"[CALLMGR] Call {call_id} ended — {duration_seconds:.1f}s ({end_reason})")
+        logger.info(
+            f"[CALLMGR] Call {call_id} ended — {duration_seconds:.1f}s ({end_reason})"
+        )
 
     def on_transcript_update(self, call_id: str, messages: list):
         """Called to update transcript for a call."""

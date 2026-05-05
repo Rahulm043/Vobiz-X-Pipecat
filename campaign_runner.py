@@ -24,12 +24,14 @@ class CampaignRunner:
         mode: str = "sequential",
         concurrent_limit: int = 1,
         call_gap_seconds: int = 30,
+        agent_id: str = None,
     ):
         self.campaign_id = campaign_id
         self.manager = call_manager
         self.mode = mode
         self.concurrent_limit = max(1, concurrent_limit)
         self.call_gap_seconds = max(5, call_gap_seconds)
+        self.agent_id = agent_id
 
         self._task: Optional[asyncio.Task] = None
         self._paused = asyncio.Event()
@@ -53,13 +55,16 @@ class CampaignRunner:
         self._cancelled = False
         self._paused.set()
         self._task = asyncio.create_task(self._run())
-        logger.info(f"[CAMPAIGN] Started campaign {self.campaign_id} in {self.mode} mode")
+        logger.info(
+            f"[CAMPAIGN] Started campaign {self.campaign_id} in {self.mode} mode"
+        )
 
     async def pause(self):
         """Pause the campaign (finishes current call, doesn't start next)."""
         self._paused.clear()
         logger.info(f"[CAMPAIGN] Paused campaign {self.campaign_id}")
         import call_store
+
         call_store.update_campaign(self.campaign_id, status="paused")
 
     async def resume(self):
@@ -67,6 +72,7 @@ class CampaignRunner:
         self._paused.set()
         logger.info(f"[CAMPAIGN] Resumed campaign {self.campaign_id}")
         import call_store
+
         call_store.update_campaign(self.campaign_id, status="running")
 
     async def cancel(self):
@@ -77,6 +83,7 @@ class CampaignRunner:
             self._task.cancel()
         logger.info(f"[CAMPAIGN] Cancelled campaign {self.campaign_id}")
         import call_store
+
         call_store.update_campaign(
             self.campaign_id,
             status="cancelled",
@@ -95,9 +102,14 @@ class CampaignRunner:
 
             recipients = campaign.get("recipients", [])
             if not recipients:
-                logger.warning(f"[CAMPAIGN] Campaign {self.campaign_id} has no recipients")
-                call_store.update_campaign(self.campaign_id, status="completed",
-                                           completed_at=datetime.now(timezone.utc).isoformat())
+                logger.warning(
+                    f"[CAMPAIGN] Campaign {self.campaign_id} has no recipients"
+                )
+                call_store.update_campaign(
+                    self.campaign_id,
+                    status="completed",
+                    completed_at=datetime.now(timezone.utc).isoformat(),
+                )
                 return
 
             call_store.update_campaign(
@@ -107,11 +119,17 @@ class CampaignRunner:
             )
 
             # Get list of already-made calls for this campaign to skip them
-            existing_calls = call_store.list_calls(campaign_id=self.campaign_id, limit=10000)
+            existing_calls = call_store.list_calls(
+                campaign_id=self.campaign_id, limit=10000
+            )
             called_numbers = {c["phone_number"] for c in existing_calls}
 
-            remaining = [r for r in recipients if r.get("phone_number") not in called_numbers]
-            logger.info(f"[CAMPAIGN] {len(remaining)} remaining out of {len(recipients)} total")
+            remaining = [
+                r for r in recipients if r.get("phone_number") not in called_numbers
+            ]
+            logger.info(
+                f"[CAMPAIGN] {len(remaining)} remaining out of {len(recipients)} total"
+            )
 
             if self.mode == "concurrent":
                 await self._run_concurrent(remaining)
@@ -133,6 +151,7 @@ class CampaignRunner:
         except Exception as e:
             logger.error(f"[CAMPAIGN] Campaign {self.campaign_id} error: {e}")
             import traceback
+
             traceback.print_exc()
             call_store.update_campaign(self.campaign_id, status="failed")
 
@@ -152,8 +171,11 @@ class CampaignRunner:
             phone = recipient.get("phone_number")
             name = recipient.get("name", "")
             detail = recipient.get("detail", "")
+            agent_id = recipient.get("agent_id") or self.agent_id
 
-            logger.info(f"[CAMPAIGN] [{i + 1}/{len(recipients)}] Calling {phone} ({name})")
+            logger.info(
+                f"[CAMPAIGN] [{i + 1}/{len(recipients)}] Calling {phone} ({name})"
+            )
 
             try:
                 call_record = await self.manager.make_single_call(
@@ -161,6 +183,7 @@ class CampaignRunner:
                     recipient_name=name,
                     recipient_detail=detail,
                     campaign_id=self.campaign_id,
+                    agent_id=agent_id,
                 )
 
                 # Wait for the call to complete by polling
@@ -174,7 +197,9 @@ class CampaignRunner:
 
             # Gap between calls (unless last one or cancelled)
             if i < len(recipients) - 1 and not self._cancelled:
-                logger.info(f"[CAMPAIGN] Waiting {self.call_gap_seconds}s before next call...")
+                logger.info(
+                    f"[CAMPAIGN] Waiting {self.call_gap_seconds}s before next call..."
+                )
                 try:
                     await asyncio.wait_for(
                         self._wait_for_cancel(),
@@ -200,8 +225,11 @@ class CampaignRunner:
                 phone = recipient.get("phone_number")
                 name = recipient.get("name", "")
                 detail = recipient.get("detail", "")
+                agent_id = recipient.get("agent_id") or self.agent_id
 
-                logger.info(f"[CAMPAIGN] [{index + 1}/{len(recipients)}] Calling {phone}")
+                logger.info(
+                    f"[CAMPAIGN] [{index + 1}/{len(recipients)}] Calling {phone}"
+                )
 
                 try:
                     call_record = await self.manager.make_single_call(
@@ -209,6 +237,7 @@ class CampaignRunner:
                         recipient_name=name,
                         recipient_detail=detail,
                         campaign_id=self.campaign_id,
+                        agent_id=agent_id,
                     )
                     await self._wait_for_call_completion(call_record["call_id"])
                 except Exception as e:
